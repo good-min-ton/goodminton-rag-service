@@ -1,0 +1,18 @@
+[project]
+name = "goodminton-rag-service"
+version = "0.1.0"
+description = "RAG chatbot service tư vấn sản phẩm cầu lông cho Goodminton Shop"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "asyncpg>=0.29",
+    "pgvector>=0.2.5",
+    "httpx>=0.25",
+    "langchain-text-splitters>=0.0.1",
+    "python-dotenv>=1.0",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.4",
+]
