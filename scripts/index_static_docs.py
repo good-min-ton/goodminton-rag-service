@@ -20,6 +20,7 @@ import asyncio
 import os
 import sys
 from pathlib import Path
+from urllib.parse import quote_plus
 
 import asyncpg
 import httpx
@@ -27,9 +28,26 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pgvector.asyncpg import register_vector
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
-DATABASE_URL = os.getenv("DATABASE_URL")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "bge-m3")
 DOCS_DIR = Path(__file__).parent.parent / "data" / "static_docs"
+
+
+def resolve_database_url() -> str | None:
+    """Lấy DATABASE_URL trực tiếp, hoặc ghép từ POSTGRES_* (URL-encode password)."""
+    direct = os.getenv("DATABASE_URL")
+    if direct:
+        return direct
+    user = os.getenv("POSTGRES_USER")
+    pwd = os.getenv("POSTGRES_PASSWORD")
+    if not (user and pwd):
+        return None
+    host = os.getenv("POSTGRES_HOST", "postgres")
+    port = os.getenv("POSTGRES_PORT", "5432")
+    db = os.getenv("POSTGRES_DB", "goodminton")
+    return f"postgresql://{quote_plus(user)}:{quote_plus(pwd)}@{host}:{port}/{db}"
+
+
+DATABASE_URL = resolve_database_url()
 
 CHUNK_SIZE = 500
 CHUNK_OVERLAP = 50

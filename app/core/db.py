@@ -14,7 +14,7 @@ async def _init_connection(conn: asyncpg.Connection) -> None:
 async def create_pool() -> asyncpg.Pool:
     """Tạo asyncpg pool. Gọi trong FastAPI lifespan startup."""
     return await asyncpg.create_pool(
-        dsn=settings.database_url,
+        dsn=settings.resolved_database_url,
         min_size=1,
         max_size=10,
         init=_init_connection,
