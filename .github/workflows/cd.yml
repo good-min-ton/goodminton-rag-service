@@ -1,0 +1,60 @@
+name: CD - Build & Deploy
+
+on:
+  push:
+    branches: ["main"]
+
+env:
+  IMAGE_NAME: goodminton-rag-service
+
+jobs:
+  build:
+    name: Build & Push Docker image
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🐳 Login Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: 🏗 Build Docker image
+        run: |
+          docker build \
+            -t ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest \
+            -t ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
+            .
+
+      - name: 📤 Push Docker image
+        run: |
+          docker push ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest
+          docker push ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+
+  deploy:
+    name: 🚀 Deploy to VPS
+    needs: build
+    runs-on: self-hosted
+
+    steps:
+      - name: 🚀 Pull & restart container
+        run: |
+          cd ~/projects/goodminton
+          docker compose -f docker-compose.prod.yml pull rag-service
+          docker compose -f docker-compose.prod.yml up -d --no-deps rag-service
+          docker image prune -f
+
+  reindex-static-docs:
+    name: 🔄 Re-index static docs
+    needs: deploy
+    runs-on: self-hosted
+
+    steps:
+      - name: Run indexer
+        run: |
+          cd ~/projects/goodminton
+          docker compose -f docker-compose.prod.yml run --rm rag-service \
+            uv run python scripts/index_static_docs.py
