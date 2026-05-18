@@ -53,8 +53,22 @@ jobs:
     runs-on: self-hosted
 
     steps:
+      - name: Wait for rag-service ready
+        run: |
+          cd ~/projects/goodminton
+          # Đợi container rag-service start xong (max 30s)
+          for i in {1..30}; do
+            if docker compose -f docker-compose.prod.yml ps rag-service \
+                 --format '{{.State}}' | grep -q running; then
+              echo "rag-service is running"
+              break
+            fi
+            sleep 1
+          done
+
       - name: Run indexer
         run: |
           cd ~/projects/goodminton
-          docker compose -f docker-compose.prod.yml run --rm rag-service \
+          # Dùng exec — chạy trong container đang running, đảm bảo có network + env
+          docker compose -f docker-compose.prod.yml exec -T rag-service \
             uv run python scripts/index_static_docs.py
