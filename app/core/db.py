@@ -1,4 +1,5 @@
 """Asyncpg connection pool + pgvector type registration."""
+
 import asyncpg
 from pgvector.asyncpg import register_vector
 

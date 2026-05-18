@@ -1,4 +1,5 @@
 """Ollama embedding wrapper."""
+
 import httpx
 
 from app.core.config import settings

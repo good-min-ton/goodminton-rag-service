@@ -1,4 +1,5 @@
 """pgvector similarity search."""
+
 from dataclasses import dataclass
 
 import asyncpg
@@ -19,7 +20,9 @@ class RetrievalService:
     def __init__(self, pool: asyncpg.Pool):
         self._pool = pool
 
-    async def search(self, query_embedding: list[float], k: int | None = None) -> list[Chunk]:
+    async def search(
+        self, query_embedding: list[float], k: int | None = None
+    ) -> list[Chunk]:
         """Cosine similarity search trong kb_chunks. Trả về top-k chunks."""
         top_k = k or settings.retrieval_top_k
 

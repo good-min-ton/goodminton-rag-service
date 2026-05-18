@@ -15,6 +15,7 @@ Yêu cầu:
 Chạy:
   python scripts/index_static_docs.py
 """
+
 import asyncio
 import os
 import sys

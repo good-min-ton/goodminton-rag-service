@@ -1,4 +1,5 @@
 """Ollama chat wrapper. Phase 3: non-streaming, no tool calling."""
+
 import httpx
 
 from app.core.config import settings

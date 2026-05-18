@@ -2,6 +2,7 @@
 
 Phase 3: chat endpoint với retrieval + LLM, chưa có tool calling.
 """
+
 from contextlib import asynccontextmanager
 
 import httpx

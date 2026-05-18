@@ -1,4 +1,5 @@
 """POST /chat — RAG chat endpoint (Phase 3: retrieval + LLM, no tool calling)."""
+
 from fastapi import APIRouter, HTTPException, Request
 
 from app.core.config import settings
