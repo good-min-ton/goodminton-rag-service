@@ -1,19 +1,19 @@
 # Goodminton RAG Service
 
-Trợ lý RAG tư vấn sản phẩm cầu lông cho Goodminton Shop.
+RAG assistant for Goodminton Shop — helps customers learn about products, get personalized recommendations, and look up real-time info (Phase 5+).
 
-Thiết kế tổng thể: xem [`goodminton-shop-api/docs/rag-chatbot-guide.md`](../goodminton-shop-api/docs/rag-chatbot-guide.md).
+Design spec: see [`goodminton-shop-api/docs/rag-chatbot-guide.md`](../goodminton-shop-api/docs/rag-chatbot-guide.md).
 
-## Trạng thái
+## Status
 
-- [x] Phase 1 — Foundation (pgvector, RabbitMQ, Ollama) trong repo `goodminton-shop-api`
+- [x] Phase 1 — Foundation (pgvector, RabbitMQ, Ollama) — lives in `goodminton-shop-api` repo
 - [x] Phase 2 — Static docs + index script
-- [x] **Phase 3 — FastAPI app + /chat endpoint + retrieval** ← bạn đang xem
-- [ ] Phase 4 — RabbitMQ consumer cho product sync
-- [ ] Phase 5 — Tool calling cho real-time data (price, stock)
+- [x] **Phase 3 — FastAPI app + `/chat` endpoint + retrieval** ← current
+- [ ] Phase 4 — RabbitMQ consumer for product sync
+- [ ] Phase 5 — Tool calling for real-time data (price, stock)
 - [ ] Phase 6 — NextJS UI integration
 
-## Cấu trúc
+## Repository layout
 
 ```
 rag-service/
@@ -26,130 +26,116 @@ rag-service/
 │   │   ├── retrieval.py          # pgvector similarity search
 │   │   └── llm.py                # Ollama Qwen chat wrapper
 │   ├── core/
-│   │   ├── config.py             # Pydantic settings (env)
+│   │   ├── config.py             # Pydantic settings (env-driven)
 │   │   ├── prompts.py            # System prompt
-│   │   └── db.py                 # asyncpg pool
+│   │   └── db.py                 # asyncpg pool factory
 │   └── models/
-│       └── schemas.py            # Pydantic request/response
+│       └── schemas.py            # Pydantic request/response models
 ├── data/
-│   └── static_docs/              # Lớp A — bộ tối thiểu
+│   └── static_docs/              # Layer A — minimal policy/info docs
 │       ├── 01-chinh-sach-bao-hanh.md
 │       ├── 02-chinh-sach-doi-tra.md
 │       ├── 03-thong-tin-shop.md
 │       └── 04-huong-dan-can-day-vot.md
 ├── scripts/
-│   └── index_static_docs.py      # Embed + INSERT vào kb_chunks (chạy 1 lần)
-├── Dockerfile                    # FastAPI image (default uvicorn)
+│   └── index_static_docs.py      # Embed + UPSERT into kb_chunks
+├── Dockerfile                    # FastAPI image (default: uvicorn)
 ├── pyproject.toml                # uv-managed deps (PEP 621)
-├── uv.lock                       # Lock file — commit cùng pyproject.toml
+├── uv.lock                       # Lock file — commit alongside pyproject.toml
 └── .env.example
 ```
 
-## Setup local dev (dùng uv)
+## Local development (uv)
 
-Cài uv (nếu chưa có):
+Install uv if you don't have it:
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-Generate lock file + install deps:
+Sync dependencies into a local `.venv`:
 
 ```bash
 cd /path/to/goodminton-rag-service
-uv sync          # Tạo .venv/, cài deps từ pyproject.toml, tạo uv.lock nếu chưa có
+uv sync          # Creates .venv/, installs from pyproject.toml, generates uv.lock if missing
 ```
 
-Chạy script (uv tự kích hoạt venv):
+Run any script through uv (it activates the venv automatically):
 
 ```bash
 uv run python scripts/index_static_docs.py
+uv run uvicorn app.main:app --reload
 ```
 
-Thêm/xoá dependency:
+Manage dependencies:
 
 ```bash
-uv add httpx               # thêm runtime dep
-uv add --dev ruff          # thêm dev dep
-uv remove httpx            # gỡ
+uv add httpx              # add runtime dep
+uv add --dev ruff         # add dev dep
+uv remove httpx           # remove
+uv lock --upgrade         # upgrade all deps to latest compatible
 ```
 
-## Phase 2 — Chạy index script
+Before committing, run lint + format:
 
-### Tiền đề
+```bash
+uv run ruff format .
+uv run ruff check .
+```
 
-Trên VPS (hoặc local dev):
+## Phase 2 — Index static docs
 
-- Stack `goodminton-shop-api` đang chạy với compose network `goodminton_default`
-- pgvector extension installed (qua Flyway V7)
-- Ollama đã pull model `bge-m3`
+### Prerequisites
 
-### Build image
+- The `goodminton-shop-api` stack is running, exposing the compose network `goodminton_default`.
+- pgvector extension is installed via Flyway migration V7.
+- Ollama is running with the `bge-m3` embedding model pulled.
+
+### Build the image
 
 ```bash
 cd /path/to/goodminton-rag-service
-docker build -t goodminton-rag-indexer:latest .
+docker build -t goodminton-rag-service:latest .
 ```
 
-### Chạy index
+### Run the indexer
 
 ```bash
 docker run --rm \
   --network goodminton_default \
   -e DATABASE_URL="postgresql://USER:PASS@postgres:5432/goodminton" \
   -e OLLAMA_URL="http://ollama:11434" \
-  -v "$(pwd)/data/static_docs:/app/data/static_docs:ro" \
-  goodminton-rag-indexer:latest
+  goodminton-rag-service:latest \
+  uv run python scripts/index_static_docs.py
 ```
 
-Output mong đợi:
+Expected output:
 
 ```
 Cleared old static chunks
 
-  01-chinh-sach-bao-hanh.md: 3 chunks
-  02-chinh-sach-doi-tra.md: 4 chunks
-  03-thong-tin-shop.md: 3 chunks
-  04-huong-dan-can-day-vot.md: 5 chunks
+  01-chinh-sach-bao-hanh.md: 6 chunks
+  02-chinh-sach-doi-tra.md: 5 chunks
+  03-thong-tin-shop.md: 5 chunks
+  04-huong-dan-can-day-vot.md: 6 chunks
 
-Done. Total: 15 chunks indexed.
+Done. Total: 22 chunks indexed.
 ```
 
-### Verify trong Postgres
+### Verify in Postgres
 
 ```bash
 docker exec -it goodminton-postgres psql -U USER -d goodminton -c \
   "SELECT doc_type, source_id, COUNT(*) FROM kb_chunks GROUP BY doc_type, source_id ORDER BY source_id;"
 ```
 
-### Test retrieval (similarity search)
+### Updating docs content
 
-```bash
-docker exec -it goodminton-postgres psql -U USER -d goodminton << 'SQL'
-WITH q AS (
-  -- Embedding của query (sẽ làm trong Phase 3 — đây chỉ là placeholder)
-  SELECT embedding FROM kb_chunks WHERE doc_type='static' LIMIT 1
-)
-SELECT source_id, chunk_index, LEFT(content, 100)
-FROM kb_chunks, q
-WHERE doc_type='static'
-ORDER BY kb_chunks.embedding <=> q.embedding
-LIMIT 3;
-SQL
-```
+Edit any `.md` file under `data/static_docs/`, rebuild the image, and re-run the indexer command above. The script deletes existing `doc_type='static'` chunks and re-inserts.
 
-## Cập nhật nội dung docs
+In CD, the `reindex-static-docs` job runs this automatically after every successful deploy.
 
-Sửa file `.md` trong `data/static_docs/` → rebuild image → chạy lại lệnh `docker run` trên. Script tự xoá chunks cũ và insert mới.
-
-## Phase 3 — Run FastAPI service
-
-### Build image
-
-```bash
-cd /path/to/goodminton-rag-service
-docker build -t goodminton-rag-service:latest .
-```
+## Phase 3 — Run the FastAPI service
 
 ### Run
 
@@ -170,7 +156,7 @@ docker run -d \
 curl http://localhost:8000/health
 # {"status":"ok"}
 
-# Chat — câu về policy
+# Chat — policy question
 curl -X POST http://localhost:8000/chat \
   -H "Content-Type: application/json" \
   -d '{
@@ -178,7 +164,7 @@ curl -X POST http://localhost:8000/chat \
     "chat_history": []
   }'
 
-# Chat với history
+# Chat with history
 curl -X POST http://localhost:8000/chat \
   -H "Content-Type: application/json" \
   -d '{
@@ -190,7 +176,7 @@ curl -X POST http://localhost:8000/chat \
   }'
 ```
 
-Response format:
+Response shape:
 
 ```json
 {
@@ -202,6 +188,21 @@ Response format:
 }
 ```
 
-### Docs Swagger
+### OpenAPI UI
 
-Mở `http://localhost:8000/docs` để xem OpenAPI spec + thử endpoint qua UI.
+Open `http://localhost:8000/docs` to browse the spec and try requests interactively.
+
+## CI/CD
+
+- **CI** (`.github/workflows/ci.yml`) — runs on PRs and pushes to `main`. Lints with ruff and verifies the Docker image builds.
+- **CD** (`.github/workflows/cd.yml`) — runs on pushes to `main`. Three jobs:
+  1. `build` — builds and pushes the Docker image to Docker Hub.
+  2. `deploy` — on the self-hosted runner, pulls the new image and recreates the `rag-service` container via compose.
+  3. `reindex-static-docs` — runs `index_static_docs.py` against the live stack to refresh chunks.
+
+The `rag-service` service is declared in `goodminton-shop-api/docker-compose.prod.yml` and runs alongside the rest of the stack on the VPS.
+
+Required secrets (org-level `good-min-ton`):
+
+- `DOCKER_USERNAME`
+- `DOCKER_PASSWORD` (Docker Hub access token)
