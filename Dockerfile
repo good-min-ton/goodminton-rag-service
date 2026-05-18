@@ -1,21 +1,18 @@
-# Phase 2 — image dùng để chạy index script.
-# Phase 3 sẽ mở rộng cho FastAPI service.
-#
-# Dùng official uv image (Astral) — base có sẵn Python + uv CLI, nhanh hơn pip.
+# Phase 3 — FastAPI service.
+# Index script vẫn chạy được bằng: docker run ... <image> uv run python scripts/index_static_docs.py
 FROM ghcr.io/astral-sh/uv:python3.11-bookworm-slim
 
 WORKDIR /app
 
-# Cache dependencies layer riêng (tận dụng Docker layer cache):
-# Chỉ copy pyproject.toml + uv.lock → install deps → sau đó mới copy code.
+# Cache deps layer riêng
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-install-project --no-dev
 
 # Copy code
 COPY . .
-
-# Install project (không có gì thêm ngoài đã cài, nhưng đúng convention)
 RUN uv sync --frozen --no-dev
 
-# Default: chạy index script. Override bằng docker run ... <cmd>
-CMD ["uv", "run", "python", "scripts/index_static_docs.py"]
+EXPOSE 8000
+
+# Default: chạy FastAPI app
+CMD ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -7,8 +7,8 @@ Thiết kế tổng thể: xem [`goodminton-shop-api/docs/rag-chatbot-guide.md`]
 ## Trạng thái
 
 - [x] Phase 1 — Foundation (pgvector, RabbitMQ, Ollama) trong repo `goodminton-shop-api`
-- [x] **Phase 2 — Static docs + index script** ← bạn đang xem
-- [ ] Phase 3 — FastAPI app + /chat endpoint + retrieval
+- [x] Phase 2 — Static docs + index script
+- [x] **Phase 3 — FastAPI app + /chat endpoint + retrieval** ← bạn đang xem
 - [ ] Phase 4 — RabbitMQ consumer cho product sync
 - [ ] Phase 5 — Tool calling cho real-time data (price, stock)
 - [ ] Phase 6 — NextJS UI integration
@@ -17,6 +17,20 @@ Thiết kế tổng thể: xem [`goodminton-shop-api/docs/rag-chatbot-guide.md`]
 
 ```
 rag-service/
+├── app/
+│   ├── main.py                   # FastAPI entrypoint + lifespan
+│   ├── routers/
+│   │   └── chat.py               # POST /chat
+│   ├── services/
+│   │   ├── embedding.py          # Ollama bge-m3 wrapper
+│   │   ├── retrieval.py          # pgvector similarity search
+│   │   └── llm.py                # Ollama Qwen chat wrapper
+│   ├── core/
+│   │   ├── config.py             # Pydantic settings (env)
+│   │   ├── prompts.py            # System prompt
+│   │   └── db.py                 # asyncpg pool
+│   └── models/
+│       └── schemas.py            # Pydantic request/response
 ├── data/
 │   └── static_docs/              # Lớp A — bộ tối thiểu
 │       ├── 01-chinh-sach-bao-hanh.md
@@ -24,8 +38,8 @@ rag-service/
 │       ├── 03-thong-tin-shop.md
 │       └── 04-huong-dan-can-day-vot.md
 ├── scripts/
-│   └── index_static_docs.py      # Embed + INSERT vào kb_chunks
-├── Dockerfile                    # Build image cho indexer (Phase 3 sẽ mở rộng)
+│   └── index_static_docs.py      # Embed + INSERT vào kb_chunks (chạy 1 lần)
+├── Dockerfile                    # FastAPI image (default uvicorn)
 ├── pyproject.toml                # uv-managed deps (PEP 621)
 ├── uv.lock                       # Lock file — commit cùng pyproject.toml
 └── .env.example
@@ -128,4 +142,66 @@ SQL
 
 Sửa file `.md` trong `data/static_docs/` → rebuild image → chạy lại lệnh `docker run` trên. Script tự xoá chunks cũ và insert mới.
 
-Phase 3 sẽ tự động hoá: image rag-service start lên → init container chạy index trước khi FastAPI listen.
+## Phase 3 — Run FastAPI service
+
+### Build image
+
+```bash
+cd /path/to/goodminton-rag-service
+docker build -t goodminton-rag-service:latest .
+```
+
+### Run
+
+```bash
+docker run -d \
+  --name goodminton-rag \
+  --network goodminton_default \
+  -p 8000:8000 \
+  -e DATABASE_URL="postgresql://USER:PASS@postgres:5432/goodminton" \
+  -e OLLAMA_URL="http://ollama:11434" \
+  goodminton-rag-service:latest
+```
+
+### Test
+
+```bash
+# Health
+curl http://localhost:8000/health
+# {"status":"ok"}
+
+# Chat — câu về policy
+curl -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Vợt mua ở shop bảo hành mấy tháng?",
+    "chat_history": []
+  }'
+
+# Chat với history
+curl -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Còn lực căng dây nào phù hợp người mới không?",
+    "chat_history": [
+      {"role": "user", "content": "Tôi mới chơi cầu lông"},
+      {"role": "assistant", "content": "Chào bạn! Bạn cần tư vấn về vợt, giày, hay cách chơi?"}
+    ]
+  }'
+```
+
+Response format:
+
+```json
+{
+  "answer": "...",
+  "sources": [
+    {"doc_type": "static", "source_id": "01-chinh-sach-bao-hanh.md"},
+    {"doc_type": "static", "source_id": "04-huong-dan-can-day-vot.md"}
+  ]
+}
+```
+
+### Docs Swagger
+
+Mở `http://localhost:8000/docs` để xem OpenAPI spec + thử endpoint qua UI.
