@@ -54,14 +54,14 @@ CHUNK_OVERLAP = 50
 
 
 async def embed(client: httpx.AsyncClient, text: str) -> list[float]:
-    """Gọi Ollama /api/embeddings để lấy vector."""
+    """Gọi Ollama /api/embed để lấy vector (new endpoint, /api/embeddings deprecated)."""
     r = await client.post(
-        f"{OLLAMA_URL}/api/embeddings",
-        json={"model": EMBEDDING_MODEL, "prompt": text},
+        f"{OLLAMA_URL}/api/embed",
+        json={"model": EMBEDDING_MODEL, "input": text},
         timeout=60.0,
     )
     r.raise_for_status()
-    return r.json()["embedding"]
+    return r.json()["embeddings"][0]
 
 
 async def main() -> None:
@@ -88,33 +88,34 @@ async def main() -> None:
     await register_vector(conn)
 
     async with httpx.AsyncClient() as http:
-        # Re-index strategy: xoá hết static chunks rồi insert lại.
-        # Phù hợp scale < 1000 chunks. Lớn hơn cần diff-based.
-        await conn.execute("DELETE FROM kb_chunks WHERE doc_type = 'static'")
-        print("Cleared old static chunks\n")
-
+        # Atomic: DELETE + INSERT trong cùng transaction → nếu embed/insert fail,
+        # rollback giữ chunks cũ. Tránh bug trước: DELETE commit, INSERT crash, mất hết.
         total = 0
-        for md_file in md_files:
-            text = md_file.read_text(encoding="utf-8")
-            chunks = splitter.split_text(text)
-            source_id = md_file.name
+        async with conn.transaction():
+            await conn.execute("DELETE FROM kb_chunks WHERE doc_type = 'static'")
+            print("Cleared old static chunks (in transaction)\n")
 
-            for idx, chunk in enumerate(chunks):
-                embedding = await embed(http, chunk)
-                await conn.execute(
-                    """
-                    INSERT INTO kb_chunks
-                        (doc_type, source_id, chunk_index, content, embedding)
-                    VALUES ('static', $1, $2, $3, $4)
-                    """,
-                    source_id,
-                    idx,
-                    chunk,
-                    embedding,
-                )
+            for md_file in md_files:
+                text = md_file.read_text(encoding="utf-8")
+                chunks = splitter.split_text(text)
+                source_id = md_file.name
 
-            print(f"  {md_file.name}: {len(chunks)} chunks")
-            total += len(chunks)
+                for idx, chunk in enumerate(chunks):
+                    embedding = await embed(http, chunk)
+                    await conn.execute(
+                        """
+                        INSERT INTO kb_chunks
+                            (doc_type, source_id, chunk_index, content, embedding)
+                        VALUES ('static', $1, $2, $3, $4)
+                        """,
+                        source_id,
+                        idx,
+                        chunk,
+                        embedding,
+                    )
+
+                print(f"  {md_file.name}: {len(chunks)} chunks")
+                total += len(chunks)
 
     await conn.close()
     print(f"\nDone. Total: {total} chunks indexed.")
