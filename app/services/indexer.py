@@ -1,6 +1,7 @@
 """Product indexer — fetches product data from shop-api, embeds, and upserts kb_chunks."""
 
 import logging
+import re
 
 import asyncpg
 from bs4 import BeautifulSoup
@@ -12,6 +13,13 @@ from app.services.product_client import ProductClient
 
 log = logging.getLogger(__name__)
 
+# Match VND amounts like "1,200,000đ", "1.200.000 VND", "Giá: 5.159.000đ", "4tr5", "4 triệu"
+_PRICE_PATTERNS = [
+    re.compile(r"\d{1,3}(?:[.,]\d{3})+\s*(?:đ|vnđ|vnd|VND)?", re.IGNORECASE),
+    re.compile(r"\d+\s*tr(?:iệu)?(?:\s*\d+)?", re.IGNORECASE),
+    re.compile(r"giá[^.]{0,80}", re.IGNORECASE),
+]
+
 
 def strip_html(html: str | None) -> str:
     if not html:
@@ -19,17 +27,25 @@ def strip_html(html: str | None) -> str:
     return BeautifulSoup(html, "html.parser").get_text(separator=" ", strip=True)
 
 
+def strip_pricing(text: str) -> str:
+    """Remove VND amounts / 'giá ...' phrases — those belong to live tool calls."""
+    for pat in _PRICE_PATTERNS:
+        text = pat.sub("", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def build_product_text(product: dict) -> str:
     specs = product.get("specifications") or []
     specs_text = (
         " | ".join(f"{s['name']}: {s['value']}" for s in specs) if specs else "N/A"
     )
+    description = strip_pricing(strip_html(product.get("description")))
     return (
         f"Sản phẩm: {product['name']}\n"
         f"Thương hiệu: {product['brand']}\n"
         f"Danh mục: {product['category']}\n"
         f"Thông số: {specs_text}\n"
-        f"Mô tả: {strip_html(product.get('description'))}"
+        f"Mô tả: {description}"
     )
 
 
