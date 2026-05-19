@@ -11,27 +11,39 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.core.db import create_pool
+from app.messaging.product_consumer import ProductConsumer
 from app.models.schemas import HealthResponse
 from app.routers import chat as chat_router
 from app.services.embedding import EmbeddingService
+from app.services.indexer import ProductIndexer
 from app.services.llm import LLMService
+from app.services.product_client import ProductClient
 from app.services.retrieval import RetrievalService
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Khởi tạo resources: DB pool + HTTP client + service singletons."""
     pool = await create_pool()
     http_client = httpx.AsyncClient()
 
+    embedding = EmbeddingService(http_client)
+    product_client = ProductClient(http_client)
+    indexer = ProductIndexer(pool, embedding, product_client)
+    consumer = ProductConsumer(indexer)
+
     app.state.pool = pool
     app.state.http = http_client
-    app.state.embedding = EmbeddingService(http_client)
+    app.state.embedding = embedding
     app.state.retrieval = RetrievalService(pool)
     app.state.llm = LLMService(http_client)
+    app.state.indexer = indexer
+    app.state.consumer = consumer
+
+    await consumer.start()
 
     yield
 
+    await consumer.stop()
     await http_client.aclose()
     await pool.close()
 
