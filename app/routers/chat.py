@@ -1,4 +1,6 @@
-"""POST /chat — RAG chat endpoint (Phase 3: retrieval + LLM, no tool calling)."""
+"""POST /chat — RAG chat endpoint with retrieval + LLM + tool calling."""
+
+import logging
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -8,31 +10,30 @@ from app.models.schemas import ChatRequest, ChatResponse, SourceRef
 from app.services.embedding import EmbeddingService
 from app.services.llm import LLMService
 from app.services.retrieval import Chunk, RetrievalService
+from app.services.tools import TOOL_SCHEMAS, ToolDispatcher
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/chat", tags=["chat"])
+
+MAX_TOOL_ITERATIONS = 5
 
 
 @router.post("")
 async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
-    # Inject services từ app.state (set ở lifespan của main.py)
     embedding_svc: EmbeddingService = http_request.app.state.embedding
     retrieval_svc: RetrievalService = http_request.app.state.retrieval
     llm_svc: LLMService = http_request.app.state.llm
+    tool_dispatcher: ToolDispatcher = http_request.app.state.tool_dispatcher
 
     query = request.message.strip()
     if len(query) < settings.min_query_length:
         raise HTTPException(status_code=400, detail="Câu hỏi quá ngắn")
 
-    # 1. Embed user query
     query_vec = await embedding_svc.embed(query)
-
-    # 2. Retrieve top-k chunks
     chunks = await retrieval_svc.search(query_vec)
-
-    # 3. Build context block
     context = _format_context(chunks)
 
-    # 4. Build messages: system + history + user
     messages: list[dict] = [
         {"role": "system", "content": SYSTEM_PROMPT.format(context=context)}
     ]
@@ -40,20 +41,46 @@ async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
         messages.append({"role": m.role, "content": m.content})
     messages.append({"role": "user", "content": query})
 
-    # 5. Call LLM
-    answer = await llm_svc.chat(messages)
+    answer = await _run_tool_loop(llm_svc, tool_dispatcher, messages)
 
-    # 6. Build source refs (unique by doc_type+source_id)
+    return ChatResponse(answer=answer, sources=_unique_sources(chunks))
+
+
+async def _run_tool_loop(
+    llm: LLMService, dispatcher: ToolDispatcher, messages: list[dict]
+) -> str:
+    """Loop: LLM may call tools; execute, feed back, repeat until text answer."""
+    for _ in range(MAX_TOOL_ITERATIONS):
+        msg = await llm.chat_with_tools(messages, TOOL_SCHEMAS)
+        tool_calls = msg.get("tool_calls") or []
+
+        if not tool_calls:
+            return msg.get("content") or ""
+
+        messages.append(msg)
+
+        for call in tool_calls:
+            fn = call.get("function", {})
+            name = fn.get("name", "")
+            arguments = fn.get("arguments") or {}
+            log.info("Tool call: %s(%s)", name, arguments)
+            result = await dispatcher.execute(name, arguments)
+            messages.append({"role": "tool", "name": name, "content": result})
+
+    log.warning("Tool loop hit max iterations (%d)", MAX_TOOL_ITERATIONS)
+    return "Xin lỗi, mình không xử lý được yêu cầu này. Vui lòng liên hệ shop."
+
+
+def _unique_sources(chunks: list[Chunk]) -> list[SourceRef]:
     seen: set[tuple[str, str]] = set()
-    sources: list[SourceRef] = []
+    out: list[SourceRef] = []
     for c in chunks:
         key = (c.doc_type, c.source_id)
         if key in seen:
             continue
         seen.add(key)
-        sources.append(SourceRef(doc_type=c.doc_type, source_id=c.source_id))
-
-    return ChatResponse(answer=answer, sources=sources)
+        out.append(SourceRef(doc_type=c.doc_type, source_id=c.source_id))
+    return out
 
 
 def _format_context(chunks: list[Chunk]) -> str:

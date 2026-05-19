@@ -19,6 +19,7 @@ from app.services.indexer import ProductIndexer
 from app.services.llm import LLMService
 from app.services.product_client import ProductClient
 from app.services.retrieval import RetrievalService
+from app.services.tools import ToolDispatcher
 
 
 @asynccontextmanager
@@ -30,6 +31,7 @@ async def lifespan(app: FastAPI):
     product_client = ProductClient(http_client)
     indexer = ProductIndexer(pool, embedding, product_client)
     consumer = ProductConsumer(indexer)
+    tool_dispatcher = ToolDispatcher(product_client)
 
     app.state.pool = pool
     app.state.http = http_client
@@ -38,6 +40,7 @@ async def lifespan(app: FastAPI):
     app.state.llm = LLMService(http_client)
     app.state.indexer = indexer
     app.state.consumer = consumer
+    app.state.tool_dispatcher = tool_dispatcher
 
     await consumer.start()
 
