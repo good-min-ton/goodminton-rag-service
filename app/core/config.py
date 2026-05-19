@@ -56,9 +56,7 @@ class Settings(BaseSettings):
         if self.database_url:
             return self.database_url
         if not (self.postgres_user and self.postgres_password):
-            raise ValueError(
-                "Need DATABASE_URL or POSTGRES_USER + POSTGRES_PASSWORD"
-            )
+            raise ValueError("Need DATABASE_URL or POSTGRES_USER + POSTGRES_PASSWORD")
         return (
             f"postgresql://{quote_plus(self.postgres_user)}:"
             f"{quote_plus(self.postgres_password)}@"
@@ -70,9 +68,7 @@ class Settings(BaseSettings):
         if self.rabbitmq_url:
             return self.rabbitmq_url
         if not (self.rabbitmq_user and self.rabbitmq_password):
-            raise ValueError(
-                "Need RABBITMQ_URL or RABBITMQ_USER + RABBITMQ_PASSWORD"
-            )
+            raise ValueError("Need RABBITMQ_URL or RABBITMQ_USER + RABBITMQ_PASSWORD")
         return (
             f"amqp://{quote_plus(self.rabbitmq_user)}:"
             f"{quote_plus(self.rabbitmq_password)}@"
