@@ -33,10 +33,16 @@ async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
     query_vec = await embedding_svc.embed(query)
     chunks = await retrieval_svc.search(query_vec)
     context = _format_context(chunks)
+    product_ids = _extract_product_ids(chunks)
 
-    messages: list[dict] = [
-        {"role": "system", "content": SYSTEM_PROMPT.format(context=context)}
-    ]
+    system_content = SYSTEM_PROMPT.format(context=context)
+    if product_ids:
+        system_content += (
+            "\n\nDanh sách product_id để gọi tool (KHÔNG nhắc ID trong câu trả lời):\n"
+            + ", ".join(product_ids)
+        )
+
+    messages: list[dict] = [{"role": "system", "content": system_content}]
     for m in request.chat_history:
         messages.append({"role": m.role, "content": m.content})
     messages.append({"role": "user", "content": query})
@@ -50,9 +56,15 @@ async def _run_tool_loop(
     llm: LLMService, dispatcher: ToolDispatcher, messages: list[dict]
 ) -> str:
     """Loop: LLM may call tools; execute, feed back, repeat until text answer."""
-    for _ in range(MAX_TOOL_ITERATIONS):
+    for iteration in range(MAX_TOOL_ITERATIONS):
         msg = await llm.chat_with_tools(messages, TOOL_SCHEMAS)
         tool_calls = msg.get("tool_calls") or []
+        log.info(
+            "iter=%d tool_calls=%d content_preview=%r",
+            iteration,
+            len(tool_calls),
+            (msg.get("content") or "")[:100],
+        )
 
         if not tool_calls:
             return msg.get("content") or ""
@@ -86,12 +98,18 @@ def _unique_sources(chunks: list[Chunk]) -> list[SourceRef]:
 def _format_context(chunks: list[Chunk]) -> str:
     if not chunks:
         return "(Không tìm thấy thông tin liên quan trong cơ sở dữ liệu.)"
-    parts = []
+    return "\n\n---\n\n".join(c.content for c in chunks)
+
+
+def _extract_product_ids(chunks: list[Chunk]) -> list[str]:
+    """Unique product source_ids in retrieval order — for tool-calling hints in prompt."""
+    seen: set[str] = set()
+    out: list[str] = []
     for c in chunks:
-        # For products, prefix with product_id so LLM can call tools with correct ID.
-        # For static docs, no prefix — they're knowledge, not tool targets.
-        if c.doc_type == "product":
-            parts.append(f"(product_id={c.source_id})\n{c.content}")
-        else:
-            parts.append(c.content)
-    return "\n\n---\n\n".join(parts)
+        if c.doc_type != "product":
+            continue
+        if c.source_id in seen:
+            continue
+        seen.add(c.source_id)
+        out.append(c.source_id)
+    return out
