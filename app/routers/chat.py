@@ -12,7 +12,7 @@ from app.services.retrieval import Chunk, RetrievalService
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 
-@router.post("", response_model=ChatResponse)
+@router.post("")
 async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
     # Inject services từ app.state (set ở lifespan của main.py)
     embedding_svc: EmbeddingService = http_request.app.state.embedding
@@ -57,10 +57,6 @@ async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
 
 
 def _format_context(chunks: list[Chunk]) -> str:
-    """Format chunks thành block dễ đọc cho LLM."""
     if not chunks:
         return "(Không tìm thấy thông tin liên quan trong cơ sở dữ liệu.)"
-    parts = []
-    for c in chunks:
-        parts.append(f"[{c.doc_type} / {c.source_id}]\n{c.content}")
-    return "\n\n---\n\n".join(parts)
+    return "\n\n---\n\n".join(c.content for c in chunks)
