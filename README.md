@@ -4,15 +4,6 @@ RAG assistant for Goodminton Shop — helps customers learn about products, get 
 
 Design spec: see [`goodminton-shop-api/docs/rag-chatbot-guide.md`](../goodminton-shop-api/docs/rag-chatbot-guide.md).
 
-## Status
-
-- [x] Phase 1 — Foundation (pgvector, RabbitMQ, Ollama) — lives in `goodminton-shop-api` repo
-- [x] Phase 2 — Static docs + index script
-- [x] **Phase 3 — FastAPI app + `/chat` endpoint + retrieval** ← current
-- [ ] Phase 4 — RabbitMQ consumer for product sync
-- [ ] Phase 5 — Tool calling for real-time data (price, stock)
-- [ ] Phase 6 — NextJS UI integration
-
 ## Repository layout
 
 ```
