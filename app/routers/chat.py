@@ -16,7 +16,7 @@ log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
-MAX_TOOL_ITERATIONS = 5
+MAX_TOOL_ITERATIONS = 10
 
 
 @router.post("")
@@ -86,4 +86,12 @@ def _unique_sources(chunks: list[Chunk]) -> list[SourceRef]:
 def _format_context(chunks: list[Chunk]) -> str:
     if not chunks:
         return "(Không tìm thấy thông tin liên quan trong cơ sở dữ liệu.)"
-    return "\n\n---\n\n".join(c.content for c in chunks)
+    parts = []
+    for c in chunks:
+        # For products, prefix with product_id so LLM can call tools with correct ID.
+        # For static docs, no prefix — they're knowledge, not tool targets.
+        if c.doc_type == "product":
+            parts.append(f"(product_id={c.source_id})\n{c.content}")
+        else:
+            parts.append(c.content)
+    return "\n\n---\n\n".join(parts)
