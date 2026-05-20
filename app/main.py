@@ -1,13 +1,16 @@
-"""FastAPI entrypoint cho rag-service.
+"""FastAPI entrypoint for rag-service."""
 
-Phase 3: chat endpoint với retrieval + LLM, chưa có tool calling.
-"""
-
+import logging
 from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(name)s %(levelname)s %(message)s",
+)
 
 from app.core.config import settings
 from app.core.db import create_pool
