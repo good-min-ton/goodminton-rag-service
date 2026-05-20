@@ -13,11 +13,11 @@ from app.services.product_client import ProductClient
 
 log = logging.getLogger(__name__)
 
-# Match VND amounts like "1,200,000đ", "1.200.000 VND", "Giá: 5.159.000đ", "4tr5", "4 triệu"
+# Strip numeric VND amounts only — "1,200,000đ", "1.200.000 VND", "1200000đ"
+# Avoid greedy phrase matching that would gut the description.
 _PRICE_PATTERNS = [
-    re.compile(r"\d{1,3}(?:[.,]\d{3})+\s*(?:đ|vnđ|vnd|VND)?", re.IGNORECASE),
-    re.compile(r"\d+\s*tr(?:iệu)?(?:\s*\d+)?", re.IGNORECASE),
-    re.compile(r"giá[^.]{0,80}", re.IGNORECASE),
+    re.compile(r"\d{1,3}(?:[.,]\d{3})+\s*(?:đ|vnđ|vnd)?", re.IGNORECASE),
+    re.compile(r"\b\d{4,}\s*(?:đ|vnđ|vnd)\b", re.IGNORECASE),
 ]
 
 
