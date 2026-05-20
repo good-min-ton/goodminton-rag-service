@@ -7,11 +7,6 @@ import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(name)s %(levelname)s %(message)s",
-)
-
 from app.core.config import settings
 from app.core.db import create_pool
 from app.messaging.product_consumer import ProductConsumer
@@ -23,6 +18,11 @@ from app.services.llm import LLMService
 from app.services.product_client import ProductClient
 from app.services.retrieval import RetrievalService
 from app.services.tools import ToolDispatcher
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(name)s %(levelname)s %(message)s",
+)
 
 
 @asynccontextmanager
