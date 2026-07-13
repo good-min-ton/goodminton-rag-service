@@ -4,6 +4,8 @@ import json
 import logging
 from typing import Any
 
+import httpx
+
 from app.services.product_client import ProductClient
 
 log = logging.getLogger(__name__)
@@ -72,6 +74,30 @@ class ToolDispatcher:
                 )
 
             return json.dumps(result, ensure_ascii=False)
-        except Exception as e:
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                log.warning("Tool %s: not found, args %s", name, arguments)
+                return json.dumps(
+                    {
+                        "error": (
+                            f"Không tồn tại dữ liệu cho {arguments}. "
+                            "Chỉ dùng ID có trong danh sách được cung cấp trong ngữ cảnh. "
+                            "Nếu không có ID phù hợp, hãy trả lời rằng bạn không tìm thấy sản phẩm."
+                        )
+                    },
+                    ensure_ascii=False,
+                )
             log.exception("Tool %s failed with args %s", name, arguments)
-            return json.dumps({"error": str(e)}, ensure_ascii=False)
+            return json.dumps(
+                {"error": "Hệ thống tra cứu tạm thời gặp lỗi."}, ensure_ascii=False
+            )
+        except (KeyError, TypeError, ValueError):
+            log.warning("Tool %s: invalid args %s", name, arguments)
+            return json.dumps(
+                {"error": f"Tham số không hợp lệ: {arguments}"}, ensure_ascii=False
+            )
+        except Exception:
+            log.exception("Tool %s failed with args %s", name, arguments)
+            return json.dumps(
+                {"error": "Hệ thống tra cứu tạm thời gặp lỗi."}, ensure_ascii=False
+            )

@@ -1,5 +1,6 @@
 """POST /chat — RAG chat endpoint with retrieval + LLM + tool calling."""
 
+import json
 import logging
 
 from fastapi import APIRouter, HTTPException, Request
@@ -17,6 +18,7 @@ log = logging.getLogger(__name__)
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 MAX_TOOL_ITERATIONS = 10
+MAX_REPEATED_CALLS = 2
 
 
 @router.post("")
@@ -38,8 +40,14 @@ async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
     system_content = SYSTEM_PROMPT.format(context=context)
     if product_ids:
         system_content += (
-            "\n\nDanh sách product_id để gọi tool (KHÔNG nhắc ID trong câu trả lời):\n"
-            + ", ".join(product_ids)
+            "\n\nDanh sách product_id hợp lệ để gọi tool (KHÔNG nhắc ID trong câu "
+            "trả lời, KHÔNG dùng ID ngoài danh sách này):\n" + ", ".join(product_ids)
+        )
+    else:
+        system_content += (
+            "\n\nNgữ cảnh không chứa sản phẩm nào. KHÔNG gọi tool với ID tự nghĩ ra; "
+            "nếu khách hỏi giá hoặc tồn kho, trả lời rằng bạn không tìm thấy sản "
+            "phẩm phù hợp."
         )
 
     messages: list[dict] = [{"role": "system", "content": system_content}]
@@ -55,7 +63,14 @@ async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
 async def _run_tool_loop(
     llm: LLMService, dispatcher: ToolDispatcher, messages: list[dict]
 ) -> str:
-    """Loop: LLM may call tools; execute, feed back, repeat until text answer."""
+    """Loop: LLM may call tools; execute, feed back, repeat until text answer.
+
+    Identical calls are cached; after MAX_REPEATED_CALLS repeats the model is
+    clearly stuck (e.g. retrying an invalid ID), so we force a final answer
+    without tools instead of burning the remaining iterations.
+    """
+    executed: dict[tuple[str, str], str] = {}
+    repeats = 0
     for iteration in range(MAX_TOOL_ITERATIONS):
         msg = await llm.chat_with_tools(messages, TOOL_SCHEMAS)
         tool_calls = msg.get("tool_calls") or []
@@ -75,9 +90,30 @@ async def _run_tool_loop(
             fn = call.get("function", {})
             name = fn.get("name", "")
             arguments = fn.get("arguments") or {}
-            log.info("Tool call: %s(%s)", name, arguments)
-            result = await dispatcher.execute(name, arguments)
+            key = (name, json.dumps(arguments, sort_keys=True, default=str))
+            if key in executed:
+                repeats += 1
+                log.info("Repeated tool call %s(%s), cached result", name, arguments)
+                result = executed[key]
+            else:
+                log.info("Tool call: %s(%s)", name, arguments)
+                result = await dispatcher.execute(name, arguments)
+                executed[key] = result
             messages.append({"role": "tool", "name": name, "content": result})
+
+        if repeats >= MAX_REPEATED_CALLS:
+            log.warning("Model stuck repeating tool calls, forcing final answer")
+            messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        "Dừng gọi công cụ. Trả lời khách bằng thông tin hiện có; "
+                        "nếu thiếu dữ liệu, nói rõ là không có thông tin và mời "
+                        "khách liên hệ shop."
+                    ),
+                }
+            )
+            return await llm.chat(messages)
 
     log.warning("Tool loop hit max iterations (%d)", MAX_TOOL_ITERATIONS)
     return "Xin lỗi, mình không xử lý được yêu cầu này. Vui lòng liên hệ shop."
