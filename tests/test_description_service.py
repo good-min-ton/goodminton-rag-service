@@ -30,7 +30,7 @@ async def test_generate_builds_grounded_prompt_from_fields():
     user_msg = llm.chat.call_args.args[0][1]["content"]
     assert "Vợt Yonex Astrox 88D" in user_msg
     assert "Yonex" in user_msg
-    assert "Trọng lượng: 83g" in user_msg
+    assert "Trọng lượng — 83g" in user_msg
     assert "1.200.000" not in user_msg  # source description price-stripped
 
 

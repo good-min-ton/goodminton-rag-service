@@ -1,6 +1,8 @@
 # app/services/description.py
 from __future__ import annotations
 
+import re
+
 from app.core.config import settings
 from app.core.prompts import (
     DESCRIPTION_SYSTEM_PROMPT,
@@ -13,7 +15,19 @@ from app.services.llm import LLMService
 from app.services.product_client import ProductClient
 
 # Approx token budget per length, hard-capped by settings.description_num_predict.
-_LENGTH_TOKENS = {"short": 160, "medium": 320, "long": 512}
+# Structured 4-section Vietnamese output needs more headroom than plain prose.
+_LENGTH_TOKENS = {"short": 400, "medium": 800, "long": 1400}
+
+
+def _unwrap_html_document(html: str) -> str:
+    """Small models sometimes wrap output in a full HTML document despite the
+    prompt. Keep only the body fragment for the rich-text editor."""
+    body = re.search(r"<body[^>]*>(.*?)</body>", html, re.DOTALL | re.IGNORECASE)
+    if body:
+        html = body.group(1)
+    html = re.sub(r"<!DOCTYPE[^>]*>", "", html, flags=re.IGNORECASE)
+    html = re.sub(r"</?(?:html|head|body)[^>]*>", "", html, flags=re.IGNORECASE)
+    return html.strip()
 
 
 class DescriptionService:
@@ -22,13 +36,15 @@ class DescriptionService:
         self._products = product_client
 
     def _format_specs(self, product: dict) -> str:
+        # One technology per line so the model can expand each into its own
+        # bullet in the "Công nghệ nổi bật" section instead of blurring them.
         specs = product.get("specifications") or []
         parts = [
-            f"{s.get('name')}: {s.get('value')}"
+            f"- {s.get('name')} — {s.get('value')}"
             for s in specs
             if s.get("name") and s.get("value")
         ]
-        return " | ".join(parts) if parts else "N/A"
+        return "\n".join(parts) if parts else "N/A"
 
     async def generate(
         self, product_id: int, style: str, length: str, keywords: list[str]
@@ -72,5 +88,6 @@ class DescriptionService:
             model=effective_model,
         )
         # Anti-hallucination safety net: strip any leaked VND amount.
-        clean = strip_pricing(raw)
+        # Also unwrap any stray <html>/<body> the model may add around the fragment.
+        clean = _unwrap_html_document(strip_pricing(raw))
         return clean, effective_model

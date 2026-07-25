@@ -26,28 +26,49 @@ STYLE_INSTRUCTIONS = {
 }
 
 LENGTH_INSTRUCTIONS = {
-    "short": "Viết ngắn gọn khoảng 40-60 từ.",
-    "medium": "Viết vừa phải khoảng 90-120 từ.",
-    "long": "Viết chi tiết khoảng 160-200 từ.",
+    "short": "Ngắn gọn: mỗi mục 1-2 câu, tổng khoảng 120-160 từ.",
+    "medium": "Vừa phải: mỗi mục 2-3 câu, tổng khoảng 220-300 từ.",
+    "long": (
+        "Chi tiết: diễn giải đầy đủ từng mục, bung riêng từng công nghệ; "
+        "tổng khoảng 350-500 từ."
+    ),
 }
 
 DESCRIPTION_SYSTEM_PROMPT = (
-    "Bạn là chuyên viên viết nội dung marketing cho Goodminton. "
-    "QUY TẮC BẮT BUỘC: chỉ dùng thông tin được cung cấp; KHÔNG bịa thông số, "
-    "giá, khuyến mãi, số liệu hay giải thưởng; KHÔNG nhắc đến giá tiền (giá là "
-    "dữ liệu động, xử lý riêng); nếu một trường bị thiếu thì bỏ qua, không bịa. "
-    "Viết bằng tiếng Việt, trả về văn xuôi thuần, không markdown, không tiêu đề."
+    "Bạn là chuyên viên viết nội dung sản phẩm cầu lông cho Goodminton, am hiểu "
+    "vợt/giày/quần áo và công nghệ của các hãng (Yonex, Lining, Victor...).\n"
+    "QUY TẮC BẮT BUỘC:\n"
+    "- CHỈ dùng thông tin được cung cấp. TUYỆT ĐỐI không bịa thông số, giá, khuyến "
+    "mãi, giải thưởng, trọng lượng, độ căng hay bất kỳ số liệu nào không có trong dữ liệu.\n"
+    "- KHÔNG nhắc đến giá tiền (giá là dữ liệu động, xử lý riêng).\n"
+    "- Với MỖI công nghệ được cung cấp, diễn giải LỢI ÍCH thực tế cho người chơi dựa "
+    "trên phần giải thích đi kèm (viết lại tự nhiên, không sao chép máy móc).\n"
+    "- Nếu một trường thiếu dữ liệu thì bỏ qua mục đó, không bịa.\n"
+    "Viết tiếng Việt tự nhiên, có cấu trúc rõ ràng theo các mục được yêu cầu.\n"
+    "ĐỊNH DẠNG ĐẦU RA: trả về HTML hợp lệ cho trình soạn thảo — dùng <h3> cho tiêu đề "
+    "mỗi mục, <p> cho đoạn văn, <ul>/<li> cho danh sách công nghệ, <strong> để nhấn mạnh. "
+    "KHÔNG dùng Markdown, KHÔNG dùng dấu ```, KHÔNG bọc <html>/<body>."
 )
 
 DESCRIPTION_USER_TEMPLATE = (
-    "Thông tin sản phẩm:\n"
+    "Viết mô tả bán hàng cho sản phẩm sau theo ĐÚNG 4 mục dưới đây, trả về HTML.\n\n"
+    "=== DỮ LIỆU SẢN PHẨM ===\n"
     "Tên: {name}\n"
     "Thương hiệu: {brand}\n"
     "Danh mục: {category}\n"
-    "Thông số: {specs}\n"
-    "Mô tả gốc: {source_description}\n\n"
-    "Yêu cầu văn phong: {style_instruction}\n"
-    "Yêu cầu độ dài: {length_instruction}\n"
-    "Từ khóa cần lồng ghép (nếu đúng với dữ liệu): {keywords}\n\n"
-    "Hãy viết mô tả sản phẩm."
+    "Công nghệ / thông số (mỗi dòng một mục dạng 'Tên — giải thích'):\n{specs}\n"
+    "Trích mô tả gốc (chỉ tham khảo bối cảnh & văn phong, KHÔNG chép nguyên văn):\n"
+    "{source_description}\n\n"
+    "=== CẤU TRÚC BẮT BUỘC (mỗi mục mở đầu bằng thẻ <h3>) ===\n"
+    "<h3>1. Giới thiệu {name}</h3> rồi một <p> 2-4 câu: sản phẩm là gì, thuộc dòng/thương "
+    "hiệu nào, định vị lối chơi và đối tượng nổi bật.\n"
+    "<h3>2. Công nghệ nổi bật</h3> rồi một <ul>: với MỖI công nghệ ở trên, một <li> dạng "
+    "<strong>Tên công nghệ</strong> — diễn giải lợi ích cho người chơi. KHÔNG bỏ sót công nghệ nào.\n"
+    "<h3>3. Đối tượng phù hợp</h3> rồi <p> hoặc <ul>: hợp với trình độ/lối chơi/nhu cầu nào "
+    "(suy luận hợp lý từ công nghệ và danh mục, không bịa con số).\n"
+    "<h3>4. Tổng kết</h3> rồi một <p> 1-2 câu chốt giá trị chính kèm lời kêu gọi nhẹ nhàng.\n\n"
+    "=== YÊU CẦU THÊM ===\n"
+    "Văn phong: {style_instruction}\n"
+    "Độ chi tiết: {length_instruction}\n"
+    "Từ khóa lồng ghép tự nhiên (nếu phù hợp dữ liệu): {keywords}\n"
 )
