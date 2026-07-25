@@ -13,6 +13,7 @@ from app.messaging.product_consumer import ProductConsumer
 from app.models.schemas import HealthResponse
 from app.routers import chat as chat_router
 from app.routers import products as products_router
+from app.services.description import DescriptionService
 from app.services.embedding import EmbeddingService
 from app.services.indexer import ProductIndexer
 from app.services.llm import LLMService
@@ -48,6 +49,9 @@ async def lifespan(app: FastAPI):
     app.state.consumer = consumer
     app.state.tool_dispatcher = tool_dispatcher
     app.state.similar = similar_svc
+    app.state.description = DescriptionService(
+        llm=app.state.llm, product_client=product_client
+    )
 
     await consumer.start()
 

@@ -1,9 +1,19 @@
-"""GET /products/{product_id}/similar — cosine-similarity ranked peer products."""
+"""GET /products/{product_id}/similar — cosine-similarity ranked peer products.
 
+Also: POST /products/{product_id}/description — LLM-generated product copy.
+"""
+
+import httpx
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from app.core.config import settings
-from app.models.schemas import SimilarProduct, SimilarProductsResponse
+from app.models.schemas import (
+    DescriptionRequest,
+    DescriptionResponse,
+    SimilarProduct,
+    SimilarProductsResponse,
+)
+from app.services.description import DescriptionService
 from app.services.similar import ProductNotIndexedError, SimilarProductsService
 
 router = APIRouter(prefix="/products", tags=["products"])
@@ -38,4 +48,36 @@ async def similar(
     ]
     return SimilarProductsResponse(
         product_id=str(product_id), count=len(items), results=items
+    )
+
+
+@router.post("/{product_id}/description")
+async def generate_description(
+    product_id: int,
+    request: DescriptionRequest,
+    http_request: Request,
+) -> DescriptionResponse:
+    desc_svc: DescriptionService = http_request.app.state.description
+    try:
+        description, model = await desc_svc.generate(
+            product_id, request.style, request.length, request.keywords
+        )
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            raise HTTPException(
+                status_code=404, detail="Không tìm thấy sản phẩm"
+            ) from exc
+        raise HTTPException(
+            status_code=502, detail="Lỗi khi tạo mô tả từ mô hình ngôn ngữ"
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=502, detail="Không kết nối được dịch vụ tạo mô tả"
+        ) from exc
+    return DescriptionResponse(
+        product_id=product_id,
+        description=description,
+        model=model,
+        style=request.style,
+        length=request.length,
     )
