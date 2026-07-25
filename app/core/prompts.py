@@ -17,3 +17,37 @@ Quy tắc tư vấn:
 Kiến thức và sản phẩm liên quan:
 {context}
 """
+
+STYLE_INSTRUCTIONS = {
+    "ban_hang": "Giọng bán hàng thuyết phục, nhấn mạnh lợi ích cho người dùng.",
+    "chuyen_nghiep": "Giọng chuyên nghiệp, trung tính, tập trung vào thông số kỹ thuật.",
+    "than_thien": "Giọng thân thiện, gần gũi như đang trò chuyện với khách.",
+    "seo": "Tối ưu SEO: dùng từ khóa tự nhiên, câu rõ ràng, dễ đọc.",
+}
+
+LENGTH_INSTRUCTIONS = {
+    "short": "Viết ngắn gọn khoảng 40-60 từ.",
+    "medium": "Viết vừa phải khoảng 90-120 từ.",
+    "long": "Viết chi tiết khoảng 160-200 từ.",
+}
+
+DESCRIPTION_SYSTEM_PROMPT = (
+    "Bạn là chuyên viên viết nội dung marketing cho Goodminton. "
+    "QUY TẮC BẮT BUỘC: chỉ dùng thông tin được cung cấp; KHÔNG bịa thông số, "
+    "giá, khuyến mãi, số liệu hay giải thưởng; KHÔNG nhắc đến giá tiền (giá là "
+    "dữ liệu động, xử lý riêng); nếu một trường bị thiếu thì bỏ qua, không bịa. "
+    "Viết bằng tiếng Việt, trả về văn xuôi thuần, không markdown, không tiêu đề."
+)
+
+DESCRIPTION_USER_TEMPLATE = (
+    "Thông tin sản phẩm:\n"
+    "Tên: {name}\n"
+    "Thương hiệu: {brand}\n"
+    "Danh mục: {category}\n"
+    "Thông số: {specs}\n"
+    "Mô tả gốc: {source_description}\n\n"
+    "Yêu cầu văn phong: {style_instruction}\n"
+    "Yêu cầu độ dài: {length_instruction}\n"
+    "Từ khóa cần lồng ghép (nếu đúng với dữ liệu): {keywords}\n\n"
+    "Hãy viết mô tả sản phẩm."
+)

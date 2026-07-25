@@ -40,3 +40,17 @@ class SimilarProductsResponse(BaseModel):
     product_id: str
     count: int
     results: list[SimilarProduct]
+
+
+class DescriptionRequest(BaseModel):
+    style: Literal["ban_hang", "chuyen_nghiep", "than_thien", "seo"] = "ban_hang"
+    length: Literal["short", "medium", "long"] = "medium"
+    keywords: list[str] = Field(default_factory=list, max_length=10)
+
+
+class DescriptionResponse(BaseModel):
+    product_id: int
+    description: str
+    model: str
+    style: str
+    length: str
