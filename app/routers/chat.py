@@ -20,7 +20,7 @@ log = logging.getLogger(__name__)
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 MAX_TOOL_ITERATIONS = 10
-MAX_REPEATED_CALLS = 2
+MAX_REPEATED_CALLS = 3
 
 
 @router.post("")
@@ -80,7 +80,7 @@ async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
             messages.append({"role": m.role, "content": m.content})
         messages.append({"role": "user", "content": query})
 
-        answer, tool_products = await _run_tool_loop(
+        answer, tool_products, order_draft = await _run_tool_loop(
             llm_svc, tool_dispatcher, messages
         )
         answer, recommended = _extract_recommended(answer, chunks, tool_products)
@@ -90,12 +90,13 @@ async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
             answer=answer,
             sources=_unique_sources(chunks),
             products=recommended,
+            order_draft=order_draft,
         )
 
 
 async def _run_tool_loop(
     llm: LLMService, dispatcher: ToolDispatcher, messages: list[dict]
-) -> tuple[str, list[dict]]:
+) -> tuple[str, list[dict], dict | None]:
     """Loop: LLM may call tools; execute, feed back, repeat until text answer.
 
     Identical calls are cached; after MAX_REPEATED_CALLS repeats the model is
@@ -107,6 +108,7 @@ async def _run_tool_loop(
     """
     executed: dict[tuple[str, str], str] = {}
     tool_products: list[dict] = []
+    order_draft: dict | None = None
     repeats = 0
     for iteration in range(MAX_TOOL_ITERATIONS):
         with langfuse.start_as_current_observation(
@@ -126,7 +128,7 @@ async def _run_tool_loop(
         )
 
         if not tool_calls:
-            return msg.get("content") or "", tool_products
+            return msg.get("content") or "", tool_products, order_draft
 
         messages.append(msg)
 
@@ -149,6 +151,10 @@ async def _run_tool_loop(
                 executed[key] = result
                 if name == "recommend_similar_products":
                     _collect_tool_products(result, tool_products)
+                elif name == "prepare_order":
+                    parsed = _parse_order_draft(result)
+                    if parsed is not None:
+                        order_draft = parsed  # last successful prepare_order wins
             messages.append({"role": "tool", "name": name, "content": result})
 
         if repeats >= MAX_REPEATED_CALLS:
@@ -157,9 +163,11 @@ async def _run_tool_loop(
                 {
                     "role": "system",
                     "content": (
-                        "Dừng gọi công cụ. Trả lời khách bằng thông tin hiện có; "
-                        "nếu thiếu dữ liệu, nói rõ là không có thông tin và mời "
-                        "khách liên hệ shop."
+                        "Dừng gọi công cụ. Trả lời khách bằng thông tin hiện có. "
+                        "Nếu bạn CHƯA tạo được đơn hàng nháp, nói rõ là chưa tạo "
+                        "được đơn và mời khách thử lại — TUYỆT ĐỐI KHÔNG nói đã "
+                        "tạo thẻ xác nhận hay đã đặt đơn. Nếu thiếu dữ liệu khác, "
+                        "nói rõ là không có thông tin và mời khách liên hệ shop."
                     ),
                 }
             )
@@ -171,12 +179,13 @@ async def _run_tool_loop(
             ) as gen:
                 final = await llm.chat(messages)
                 gen.update(output=final)
-            return final, tool_products
+            return final, tool_products, order_draft
 
     log.warning("Tool loop hit max iterations (%d)", MAX_TOOL_ITERATIONS)
     return (
         "Xin lỗi, mình không xử lý được yêu cầu này. Vui lòng liên hệ shop.",
         tool_products,
+        order_draft,
     )
 
 
@@ -245,6 +254,21 @@ def _collect_tool_products(result: str, out: list[dict]) -> None:
             if pid not in seen:
                 seen.add(pid)
                 out.append({"id": pid, "name": str(item["name"])})
+
+
+def _parse_order_draft(result: str) -> dict | None:
+    """Parse a prepare_order tool result into an order_draft dict, or None.
+
+    Centralized {"error": ...} payloads and non-JSON strings yield no draft
+    (present-or-absent, not inferred from prose like _extract_recommended).
+    """
+    try:
+        data = json.loads(result)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(data, dict) or "items" not in data or "error" in data:
+        return None
+    return data
 
 
 def _extract_recommended(
