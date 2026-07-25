@@ -10,7 +10,7 @@ from app.services.llm import LLMService
 def test_description_config_defaults():
     assert settings.description_model is None
     assert settings.description_temperature == 0.5
-    assert settings.description_num_predict == 512
+    assert settings.description_num_predict == 1536
 
 
 @pytest.mark.asyncio

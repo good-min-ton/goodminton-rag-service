@@ -4,9 +4,11 @@ import json
 import logging
 
 from fastapi import APIRouter, HTTPException, Request
+from langfuse import propagate_attributes
 
 from app.core.config import settings
 from app.core.prompts import SYSTEM_PROMPT
+from app.core.tracing import langfuse
 from app.models.schemas import ChatRequest, ChatResponse, SourceRef
 from app.services.embedding import EmbeddingService
 from app.services.llm import LLMService
@@ -32,32 +34,56 @@ async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
     if len(query) < settings.min_query_length:
         raise HTTPException(status_code=400, detail="Câu hỏi quá ngắn")
 
-    query_vec = await embedding_svc.embed(query)
-    chunks = await retrieval_svc.search(query_vec)
-    context = _format_context(chunks)
-    product_ids = _extract_product_ids(chunks)
+    with (
+        propagate_attributes(session_id=request.session_id or None, trace_name="chat"),
+        langfuse.start_as_current_observation(
+            name="chat", as_type="span", input=query
+        ) as root,
+    ):
+        with langfuse.start_as_current_observation(
+            name="embed",
+            as_type="embedding",
+            input=query,
+            model=settings.embedding_model,
+        ):
+            query_vec = await embedding_svc.embed(query)
 
-    system_content = SYSTEM_PROMPT.format(context=context)
-    if product_ids:
-        system_content += (
-            "\n\nDanh sách product_id hợp lệ để gọi tool (KHÔNG nhắc ID trong câu "
-            "trả lời, KHÔNG dùng ID ngoài danh sách này):\n" + ", ".join(product_ids)
-        )
-    else:
-        system_content += (
-            "\n\nNgữ cảnh không chứa sản phẩm nào. KHÔNG gọi tool với ID tự nghĩ ra; "
-            "nếu khách hỏi giá hoặc tồn kho, trả lời rằng bạn không tìm thấy sản "
-            "phẩm phù hợp."
-        )
+        with langfuse.start_as_current_observation(
+            name="retrieval", as_type="retriever", input=query
+        ) as rspan:
+            chunks = await retrieval_svc.search(query_vec)
+            rspan.update(
+                output=[
+                    {"doc_type": c.doc_type, "source_id": c.source_id} for c in chunks
+                ]
+            )
 
-    messages: list[dict] = [{"role": "system", "content": system_content}]
-    for m in request.chat_history:
-        messages.append({"role": m.role, "content": m.content})
-    messages.append({"role": "user", "content": query})
+        context = _format_context(chunks)
+        product_ids = _extract_product_ids(chunks)
 
-    answer = await _run_tool_loop(llm_svc, tool_dispatcher, messages)
+        system_content = SYSTEM_PROMPT.format(context=context)
+        if product_ids:
+            system_content += (
+                "\n\nDanh sách product_id hợp lệ để gọi tool (KHÔNG nhắc ID trong câu "
+                "trả lời, KHÔNG dùng ID ngoài danh sách này):\n"
+                + ", ".join(product_ids)
+            )
+        else:
+            system_content += (
+                "\n\nNgữ cảnh không chứa sản phẩm nào. KHÔNG gọi tool với ID tự nghĩ "
+                "ra; nếu khách hỏi giá hoặc tồn kho, trả lời rằng bạn không tìm thấy "
+                "sản phẩm phù hợp."
+            )
 
-    return ChatResponse(answer=answer, sources=_unique_sources(chunks))
+        messages: list[dict] = [{"role": "system", "content": system_content}]
+        for m in request.chat_history:
+            messages.append({"role": m.role, "content": m.content})
+        messages.append({"role": "user", "content": query})
+
+        answer = await _run_tool_loop(llm_svc, tool_dispatcher, messages)
+
+        root.update(output=answer)
+        return ChatResponse(answer=answer, sources=_unique_sources(chunks))
 
 
 async def _run_tool_loop(
@@ -72,7 +98,14 @@ async def _run_tool_loop(
     executed: dict[tuple[str, str], str] = {}
     repeats = 0
     for iteration in range(MAX_TOOL_ITERATIONS):
-        msg = await llm.chat_with_tools(messages, TOOL_SCHEMAS)
+        with langfuse.start_as_current_observation(
+            name="llm.chat_with_tools",
+            as_type="generation",
+            input=messages,
+            model=settings.llm_model,
+        ) as gen:
+            msg = await llm.chat_with_tools(messages, TOOL_SCHEMAS)
+            gen.update(output=msg)
         tool_calls = msg.get("tool_calls") or []
         log.info(
             "iter=%d tool_calls=%d content_preview=%r",
@@ -97,7 +130,11 @@ async def _run_tool_loop(
                 result = executed[key]
             else:
                 log.info("Tool call: %s(%s)", name, arguments)
-                result = await dispatcher.execute(name, arguments)
+                with langfuse.start_as_current_observation(
+                    name=f"tool.{name}", as_type="tool", input=arguments
+                ) as tspan:
+                    result = await dispatcher.execute(name, arguments)
+                    tspan.update(output=result)
                 executed[key] = result
             messages.append({"role": "tool", "name": name, "content": result})
 
@@ -113,7 +150,15 @@ async def _run_tool_loop(
                     ),
                 }
             )
-            return await llm.chat(messages)
+            with langfuse.start_as_current_observation(
+                name="llm.chat",
+                as_type="generation",
+                input=messages,
+                model=settings.llm_model,
+            ) as gen:
+                final = await llm.chat(messages)
+                gen.update(output=final)
+            return final
 
     log.warning("Tool loop hit max iterations (%d)", MAX_TOOL_ITERATIONS)
     return "Xin lỗi, mình không xử lý được yêu cầu này. Vui lòng liên hệ shop."

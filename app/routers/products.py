@@ -13,6 +13,7 @@ from app.models.schemas import (
     SimilarProduct,
     SimilarProductsResponse,
 )
+from app.core.tracing import langfuse
 from app.services.description import DescriptionService
 from app.services.similar import ProductNotIndexedError, SimilarProductsService
 
@@ -59,9 +60,20 @@ async def generate_description(
 ) -> DescriptionResponse:
     desc_svc: DescriptionService = http_request.app.state.description
     try:
-        description, model = await desc_svc.generate(
-            product_id, request.style, request.length, request.keywords
-        )
+        with langfuse.start_as_current_observation(
+            name="generate_description",
+            as_type="generation",
+            input={
+                "product_id": product_id,
+                "style": request.style,
+                "length": request.length,
+            },
+            model=settings.description_model or settings.llm_model,
+        ) as gen:
+            description, model = await desc_svc.generate(
+                product_id, request.style, request.length, request.keywords
+            )
+            gen.update(output=description, model=model)
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 404:
             raise HTTPException(

@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.core.db import create_pool
+from app.core.tracing import langfuse
 from app.messaging.product_consumer import ProductConsumer
 from app.models.schemas import HealthResponse
 from app.routers import chat as chat_router
@@ -60,6 +61,7 @@ async def lifespan(app: FastAPI):
     await consumer.stop()
     await http_client.aclose()
     await pool.close()
+    langfuse.flush()
 
 
 app = FastAPI(

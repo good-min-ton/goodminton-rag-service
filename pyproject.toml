@@ -16,6 +16,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "aio-pika>=9.4",
     "beautifulsoup4>=4.12",
+    "langfuse>=3.0",
 ]
 
 [dependency-groups]
