@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.core.config import settings
+from app.models.schemas import ChatResponse, OrderDraft, OrderDraftItem
 from app.services.tools import TOOL_SCHEMAS, ToolDispatcher
 
 CENTRAL = "Central Test Store"
@@ -166,3 +167,32 @@ async def test_prepare_order_caps_items_at_20():
     out = await dispatcher.execute("prepare_order", {"items": items})
     draft = json.loads(out)
     assert len(draft["items"]) == 20
+
+
+async def test_prepare_order_output_round_trips_into_chat_response_model():
+    # Pins that the tool's JSON keys/types stay byte-compatible with the
+    # ChatResponse/OrderDraft Pydantic contract consumed by the router.
+    client, dispatcher = _dispatcher(_pricing([_variant()]), _inv(10))
+    out = await dispatcher.execute(
+        "prepare_order",
+        {"items": [{"product_id": 12, "variant_id": 45, "quantity": 2}]},
+    )
+    data = json.loads(out)
+
+    resp = ChatResponse(answer="x", sources=[], order_draft=data)
+
+    assert isinstance(resp.order_draft, OrderDraft)
+    item = resp.order_draft.items[0]
+    assert isinstance(item, OrderDraftItem)
+    assert item.product_id == "12"
+    assert item.variant_id == "45"
+    assert item.product_name == "Vợt Yonex Astrox 100ZZ"
+    assert item.size == "4U"
+    assert item.color == "Đỏ"
+    assert item.quantity == 2
+    assert item.unit_price == 3200000.0
+    assert item.line_total == 6400000.0
+    assert item.in_stock is True
+    assert resp.order_draft.total == 6400000.0
+    assert resp.order_draft.currency == "VND"
+    assert resp.order_draft.warnings == []
