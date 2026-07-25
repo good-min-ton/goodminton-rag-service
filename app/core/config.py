@@ -33,6 +33,11 @@ class Settings(BaseSettings):
     llm_temperature: float = 0.3
     llm_timeout_seconds: float = 120.0
 
+    # LLM — auto product description (Feature B)
+    description_model: str | None = None
+    description_temperature: float = 0.5
+    description_num_predict: int = 512
+
     # CORS — Phase 3 mở "*" cho test, Phase 6 sẽ restrict theo FRONTEND_URL
     cors_origins: list[str] = ["*"]
 
