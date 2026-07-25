@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     retrieval_top_k: int = 5
     min_query_length: int = 2
 
+    # Similar Products
+    similar_products_top_k: int = 5
+    similar_products_max_limit: int = 50
+
     # LLM
     llm_temperature: float = 0.3
     llm_timeout_seconds: float = 120.0
