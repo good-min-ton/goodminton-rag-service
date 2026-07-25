@@ -27,6 +27,10 @@ async def test_post_description_returns_200_and_body():
     assert body["description"] == "Mô tả sản phẩm tuyệt vời."
     assert body["style"] == "ban_hang"
     assert body["length"] == "medium"
+    # Pin the exact call: arg order (style/length are both str at the same
+    # call site) + keywords passthrough. An empty {} body uses the schema
+    # defaults, so generate() must be awaited with these literals.
+    desc.generate.assert_awaited_once_with(123, "ban_hang", "medium", [])
 
 
 @pytest.mark.asyncio
