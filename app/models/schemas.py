@@ -22,6 +22,9 @@ class SourceRef(BaseModel):
 class ChatResponse(BaseModel):
     answer: str
     sources: list[SourceRef]
+    # product_ids the answer actually recommends (from the <<products: ...>>
+    # marker), in recommendation order — drives the chatbot product cards.
+    products: list[str] = Field(default_factory=list)
 
 
 class HealthResponse(BaseModel):

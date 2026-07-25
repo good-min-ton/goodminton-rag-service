@@ -80,22 +80,33 @@ async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
             messages.append({"role": m.role, "content": m.content})
         messages.append({"role": "user", "content": query})
 
-        answer = await _run_tool_loop(llm_svc, tool_dispatcher, messages)
+        answer, tool_products = await _run_tool_loop(
+            llm_svc, tool_dispatcher, messages
+        )
+        answer, recommended = _extract_recommended(answer, chunks, tool_products)
 
         root.update(output=answer)
-        return ChatResponse(answer=answer, sources=_unique_sources(chunks))
+        return ChatResponse(
+            answer=answer,
+            sources=_unique_sources(chunks),
+            products=recommended,
+        )
 
 
 async def _run_tool_loop(
     llm: LLMService, dispatcher: ToolDispatcher, messages: list[dict]
-) -> str:
+) -> tuple[str, list[dict]]:
     """Loop: LLM may call tools; execute, feed back, repeat until text answer.
 
     Identical calls are cached; after MAX_REPEATED_CALLS repeats the model is
     clearly stuck (e.g. retrying an invalid ID), so we force a final answer
     without tools instead of burning the remaining iterations.
+
+    Returns the answer plus the products surfaced by recommend_similar_products
+    ({"id","name"}), so the caller can tie the product cards to the answer.
     """
     executed: dict[tuple[str, str], str] = {}
+    tool_products: list[dict] = []
     repeats = 0
     for iteration in range(MAX_TOOL_ITERATIONS):
         with langfuse.start_as_current_observation(
@@ -115,7 +126,7 @@ async def _run_tool_loop(
         )
 
         if not tool_calls:
-            return msg.get("content") or ""
+            return msg.get("content") or "", tool_products
 
         messages.append(msg)
 
@@ -136,6 +147,8 @@ async def _run_tool_loop(
                     result = await dispatcher.execute(name, arguments)
                     tspan.update(output=result)
                 executed[key] = result
+                if name == "recommend_similar_products":
+                    _collect_tool_products(result, tool_products)
             messages.append({"role": "tool", "name": name, "content": result})
 
         if repeats >= MAX_REPEATED_CALLS:
@@ -158,10 +171,13 @@ async def _run_tool_loop(
             ) as gen:
                 final = await llm.chat(messages)
                 gen.update(output=final)
-            return final
+            return final, tool_products
 
     log.warning("Tool loop hit max iterations (%d)", MAX_TOOL_ITERATIONS)
-    return "Xin lỗi, mình không xử lý được yêu cầu này. Vui lòng liên hệ shop."
+    return (
+        "Xin lỗi, mình không xử lý được yêu cầu này. Vui lòng liên hệ shop.",
+        tool_products,
+    )
 
 
 def _unique_sources(chunks: list[Chunk]) -> list[SourceRef]:
@@ -180,6 +196,86 @@ def _format_context(chunks: list[Chunk]) -> str:
     if not chunks:
         return "(Không tìm thấy thông tin liên quan trong cơ sở dữ liệu.)"
     return "\n\n---\n\n".join(c.content for c in chunks)
+
+
+def _chunk_product_name(c: Chunk) -> str:
+    """Product name from a chunk whose content starts 'Sản phẩm: <name>'."""
+    first_line = c.content.split("\n", 1)[0]
+    prefix = "Sản phẩm:"
+    return first_line[len(prefix) :].strip() if first_line.startswith(prefix) else ""
+
+
+_NAME_PREFIXES = (
+    "vợt cầu lông ",
+    "giày cầu lông ",
+    "áo cầu lông ",
+    "quần cầu lông ",
+    "balo cầu lông ",
+    "túi cầu lông ",
+    "set vợt cầu lông ",
+)
+
+
+def _name_core(name: str) -> str:
+    """Distinctive core of a product name: drop the category prefix and the
+    'chính hãng' suffix so a shortened mention in the answer still matches."""
+    s = name.strip().lower()
+    for p in _NAME_PREFIXES:
+        if s.startswith(p):
+            s = s[len(p) :]
+            break
+    for suf in (" chính hãng", " chinh hang"):
+        if s.endswith(suf):
+            s = s[: -len(suf)]
+    return s.strip()
+
+
+def _collect_tool_products(result: str, out: list[dict]) -> None:
+    """Parse {product_id, name} out of a recommend_similar_products result."""
+    try:
+        data = json.loads(result)
+    except (ValueError, TypeError):
+        return
+    if not isinstance(data, list):
+        return
+    seen = {p["id"] for p in out}
+    for item in data:
+        if isinstance(item, dict) and item.get("product_id") is not None and item.get("name"):
+            pid = str(item["product_id"])
+            if pid not in seen:
+                seen.add(pid)
+                out.append({"id": pid, "name": str(item["name"])})
+
+
+def _extract_recommended(
+    answer: str, chunks: list[Chunk], tool_products: list[dict]
+) -> tuple[str, list[str]]:
+    """Product ids the answer recommends, matched by name against the products
+    it could know about — retrieved chunks + recommend_similar_products results
+    — ordered by first mention. Keeps chatbot cards consistent with the text.
+    """
+    # Build core-name -> id (retrieval first so it wins ties, then tool results)
+    core_to_id: dict[str, str] = {}
+    for c in chunks:
+        if c.doc_type == "product":
+            nm = _chunk_product_name(c)
+            if nm:
+                core_to_id.setdefault(_name_core(nm), c.source_id)
+    for p in tool_products:
+        nm = p.get("name")
+        if nm:
+            core_to_id.setdefault(_name_core(nm), p["id"])
+
+    low = answer.lower()
+    hits: list[tuple[int, str]] = []
+    seen: set[str] = set()
+    for core, pid in core_to_id.items():
+        pos = low.find(core) if core else -1
+        if pos >= 0 and pid not in seen:
+            seen.add(pid)
+            hits.append((pos, pid))
+    hits.sort()
+    return answer, [pid for _, pid in hits]
 
 
 def _extract_product_ids(chunks: list[Chunk]) -> list[str]:
