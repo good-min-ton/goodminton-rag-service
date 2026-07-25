@@ -36,11 +36,8 @@ async def lifespan(app: FastAPI):
     product_client = ProductClient(http_client)
     indexer = ProductIndexer(pool, embedding, product_client)
     consumer = ProductConsumer(indexer)
-    # NOTE: ToolDispatcher takes exactly one arg until Task 6, where
-    # similar_svc is added as its second argument. Do not change this call
-    # site here.
-    tool_dispatcher = ToolDispatcher(product_client)
     similar_svc = SimilarProductsService(pool)
+    tool_dispatcher = ToolDispatcher(product_client, similar_svc)
 
     app.state.pool = pool
     app.state.http = http_client

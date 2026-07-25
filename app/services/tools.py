@@ -6,7 +6,9 @@ from typing import Any
 
 import httpx
 
+from app.core.config import settings
 from app.services.product_client import ProductClient
+from app.services.similar import ProductNotIndexedError, SimilarProductsService
 
 log = logging.getLogger(__name__)
 
@@ -52,12 +54,35 @@ TOOL_SCHEMAS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "recommend_similar_products",
+            "description": (
+                "Gợi ý các sản phẩm tương tự với một sản phẩm cho trước dựa trên "
+                "nội dung/đặc điểm (tên, thương hiệu, danh mục, thông số, mô tả)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "product_id": {
+                        "type": "integer",
+                        "description": "ID của sản phẩm cần tìm sản phẩm tương tự.",
+                    }
+                },
+                "required": ["product_id"],
+            },
+        },
+    },
 ]
 
 
 class ToolDispatcher:
-    def __init__(self, product_client: ProductClient):
+    def __init__(
+        self, product_client: ProductClient, similar: SimilarProductsService
+    ) -> None:
         self._client = product_client
+        self._similar = similar
 
     async def execute(self, name: str, arguments: dict[str, Any]) -> str:
         """Run a tool by name and return its result as a JSON string for the LLM."""
@@ -68,6 +93,30 @@ class ToolDispatcher:
                 result = await self._client.check_inventory(
                     int(arguments["variant_id"])
                 )
+            elif name == "recommend_similar_products":
+                try:
+                    results = await self._similar.find_similar(
+                        int(arguments["product_id"]), settings.similar_products_top_k
+                    )
+                except ProductNotIndexedError:
+                    return json.dumps(
+                        {
+                            "error": "Không tìm thấy sản phẩm",
+                            "product_id": arguments.get("product_id"),
+                        },
+                        ensure_ascii=False,
+                    )
+                payload = [
+                    {
+                        "product_id": r.product_id,
+                        "name": r.name,
+                        "similarity": 1.0 - r.distance,
+                        "distance": r.distance,
+                        "chunk_count": r.chunk_count,
+                    }
+                    for r in results
+                ]
+                return json.dumps(payload, ensure_ascii=False)
             else:
                 return json.dumps(
                     {"error": f"Unknown tool: {name}"}, ensure_ascii=False
