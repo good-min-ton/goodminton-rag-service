@@ -26,3 +26,17 @@ class ChatResponse(BaseModel):
 
 class HealthResponse(BaseModel):
     status: str
+
+
+class SimilarProduct(BaseModel):
+    product_id: str
+    name: str | None = None
+    similarity: float
+    distance: float
+    chunk_count: int
+
+
+class SimilarProductsResponse(BaseModel):
+    product_id: str
+    count: int
+    results: list[SimilarProduct]
