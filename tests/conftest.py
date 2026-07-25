@@ -47,6 +47,16 @@ async def pg_pool():
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
         pytest.skip("DATABASE_URL not set; skipping DB-backed test")
+    # Bootstrap the pgvector extension via a short-lived plain connection BEFORE
+    # creating the pool. create_pool(..., init=_init_connection) eagerly opens a
+    # connection and runs register_vector during pool creation, which fails with
+    # "unknown type: public.vector" if the extension isn't created yet. This must
+    # use no init=/codec so it works on a virgin DB.
+    bootstrap = await asyncpg.connect(dsn)
+    try:
+        await bootstrap.execute("CREATE EXTENSION IF NOT EXISTS vector")
+    finally:
+        await bootstrap.close()
     pool = await asyncpg.create_pool(dsn, min_size=1, max_size=4, init=_init_connection)
     try:
         yield pool
