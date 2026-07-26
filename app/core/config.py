@@ -62,6 +62,12 @@ class Settings(BaseSettings):
     # Central store whose inventory row prepare_order reads (env: CENTRAL_STORE_NAME)
     central_store_name: str = "Goodminton HQ - Di An"  # Store.name where is_central=true (verified 2026-07-26)
 
+    # Image search — embed-service (SigLIP, port 8001) + pgvector
+    embed_service_url: str = "http://localhost:8001"
+    image_search_top_k: int = 12
+    image_search_over_fetch_factor: int = 3  # over-fetch = top_k * this (H8)
+    image_max_upload_bytes: int = 8 * 1024 * 1024  # 8 MB outer cap
+
     @property
     def resolved_database_url(self) -> str:
         if self.database_url:
