@@ -43,7 +43,7 @@ async def lifespan(app: FastAPI):
     embed_client = EmbedClient(http_client)
     indexer = ProductIndexer(pool, embedding, product_client)
     image_indexer = ImageIndexer(pool, embed_client, product_client, http_client)
-    consumer = ProductConsumer(indexer)
+    consumer = ProductConsumer(indexer, image_indexer)
     similar_svc = SimilarProductsService(pool)
     tool_dispatcher = ToolDispatcher(product_client, similar_svc)
 
