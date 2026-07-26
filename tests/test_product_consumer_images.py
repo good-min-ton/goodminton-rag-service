@@ -35,6 +35,20 @@ async def test_semantic_and_images_triggers_both():
 
 
 @pytest.mark.asyncio
+async def test_semantic_only_event_does_not_reindex_images():
+    idx = AsyncMock()
+    img = AsyncMock()
+    consumer = ProductConsumer(idx, img)
+
+    await consumer._handle(
+        {"action": "updated", "productId": 5, "fieldsChanged": ["name"]}
+    )
+
+    idx.index_product.assert_awaited_once_with(5)
+    img.index_product_images.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_deleted_removes_text_and_image_rows():
     idx = AsyncMock()
     img = AsyncMock()
