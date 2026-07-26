@@ -59,14 +59,17 @@ async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
             )
 
         context = _format_context(chunks)
-        product_ids = _extract_product_ids(chunks)
+        catalog = _extract_product_catalog(chunks)
 
         system_content = SYSTEM_PROMPT.format(context=context)
-        if product_ids:
+        if catalog:
+            listing = "\n".join(
+                f"- {pid}: {name}" if name else f"- {pid}" for pid, name in catalog
+            )
             system_content += (
-                "\n\nDanh sách product_id hợp lệ để gọi tool (KHÔNG nhắc ID trong câu "
-                "trả lời, KHÔNG dùng ID ngoài danh sách này):\n"
-                + ", ".join(product_ids)
+                "\n\nDanh sách sản phẩm hợp lệ để gọi tool. Chọn ĐÚNG product_id ứng "
+                "với TÊN sản phẩm khách hỏi; KHÔNG nhắc ID trong câu trả lời, KHÔNG "
+                "dùng ID ngoài danh sách này:\n" + listing
             )
         else:
             system_content += (
@@ -306,15 +309,19 @@ def _extract_recommended(
     return answer, [pid for _, pid in hits]
 
 
-def _extract_product_ids(chunks: list[Chunk]) -> list[str]:
-    """Unique product source_ids in retrieval order — for tool-calling hints in prompt."""
+def _extract_product_catalog(chunks: list[Chunk]) -> list[tuple[str, str]]:
+    """Unique (product_id, name) pairs in retrieval order — tool-calling hints.
+
+    Pairing each id with its name lets the model pick the id that matches the
+    product the user named, instead of guessing from a bare id list.
+    """
     seen: set[str] = set()
-    out: list[str] = []
+    out: list[tuple[str, str]] = []
     for c in chunks:
         if c.doc_type != "product":
             continue
         if c.source_id in seen:
             continue
         seen.add(c.source_id)
-        out.append(c.source_id)
+        out.append((c.source_id, _chunk_product_name(c)))
     return out
