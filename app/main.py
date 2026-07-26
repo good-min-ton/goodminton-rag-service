@@ -9,14 +9,18 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.core.db import create_pool
+from app.core.tracing import langfuse
 from app.messaging.product_consumer import ProductConsumer
 from app.models.schemas import HealthResponse
 from app.routers import chat as chat_router
+from app.routers import products as products_router
+from app.services.description import DescriptionService
 from app.services.embedding import EmbeddingService
 from app.services.indexer import ProductIndexer
 from app.services.llm import LLMService
 from app.services.product_client import ProductClient
 from app.services.retrieval import RetrievalService
+from app.services.similar import SimilarProductsService
 from app.services.tools import ToolDispatcher
 
 logging.basicConfig(
@@ -34,7 +38,8 @@ async def lifespan(app: FastAPI):
     product_client = ProductClient(http_client)
     indexer = ProductIndexer(pool, embedding, product_client)
     consumer = ProductConsumer(indexer)
-    tool_dispatcher = ToolDispatcher(product_client)
+    similar_svc = SimilarProductsService(pool)
+    tool_dispatcher = ToolDispatcher(product_client, similar_svc)
 
     app.state.pool = pool
     app.state.http = http_client
@@ -44,6 +49,10 @@ async def lifespan(app: FastAPI):
     app.state.indexer = indexer
     app.state.consumer = consumer
     app.state.tool_dispatcher = tool_dispatcher
+    app.state.similar = similar_svc
+    app.state.description = DescriptionService(
+        llm=app.state.llm, product_client=product_client
+    )
 
     await consumer.start()
 
@@ -52,6 +61,7 @@ async def lifespan(app: FastAPI):
     await consumer.stop()
     await http_client.aclose()
     await pool.close()
+    langfuse.flush()
 
 
 app = FastAPI(
@@ -70,6 +80,7 @@ app.add_middleware(
 )
 
 app.include_router(chat_router.router)
+app.include_router(products_router.router)
 
 
 @app.get("/health", response_model=HealthResponse)

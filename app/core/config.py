@@ -25,9 +25,18 @@ class Settings(BaseSettings):
     retrieval_top_k: int = 5
     min_query_length: int = 2
 
+    # Similar Products
+    similar_products_top_k: int = 5
+    similar_products_max_limit: int = 50
+
     # LLM
     llm_temperature: float = 0.3
     llm_timeout_seconds: float = 120.0
+
+    # LLM — auto product description (Feature B)
+    description_model: str | None = None
+    description_temperature: float = 0.5
+    description_num_predict: int = 1536
 
     # CORS — Phase 3 mở "*" cho test, Phase 6 sẽ restrict theo FRONTEND_URL
     cors_origins: list[str] = ["*"]
@@ -50,6 +59,8 @@ class Settings(BaseSettings):
     # Shop API internal endpoint
     shop_api_url: str = "http://shop-api:8080"
     internal_api_key: str | None = None
+    # Central store whose inventory row prepare_order reads (env: CENTRAL_STORE_NAME)
+    central_store_name: str = "Goodminton HQ - Di An"  # Store.name where is_central=true (verified 2026-07-26)
 
     @property
     def resolved_database_url(self) -> str:
