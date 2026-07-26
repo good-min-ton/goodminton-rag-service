@@ -128,13 +128,21 @@ async def test_run_tool_loop_repeated_calls_force_final_without_draft():
     llm.chat.return_value = "Xin lỗi, mình chưa tạo được đơn, bạn thử lại giúp nhé."
 
     dispatcher = _Dispatcher(
-        {"get_pricing": json.dumps({"productId": 12, "productName": "X", "variants": []})}
+        {
+            "get_pricing": json.dumps(
+                {"productId": 12, "productName": "X", "variants": []}
+            )
+        }
     )
 
     answer, tool_products, order_draft = await _run_tool_loop(llm, dispatcher, [])
 
-    assert order_draft is None          # no prepare_order -> no draft
-    assert llm.chat.await_count == 1    # forced-final path was taken
+    assert order_draft is None  # no prepare_order -> no draft
+    assert llm.chat.await_count == 1  # forced-final path was taken
     assert answer == "Xin lỗi, mình chưa tạo được đơn, bạn thử lại giúp nhé."
-    assert dispatcher.calls == ["get_pricing"]  # repeats are cache hits, not re-executed
-    assert llm.chat_with_tools.await_count == 4  # 1 fresh + 3 cache-hit repeats -> forced final at MAX_REPEATED_CALLS=3
+    assert dispatcher.calls == [
+        "get_pricing"
+    ]  # repeats are cache hits, not re-executed
+    assert (
+        llm.chat_with_tools.await_count == 4
+    )  # 1 fresh + 3 cache-hit repeats -> forced final at MAX_REPEATED_CALLS=3

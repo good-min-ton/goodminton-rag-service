@@ -13,8 +13,8 @@ def test_order_draft_item_fields_and_types():
         line_total=6400000.0,
         in_stock=True,
     )
-    assert item.product_id == "12"      # string id convention
-    assert item.variant_id == "45"      # string id convention
+    assert item.product_id == "12"  # string id convention
+    assert item.variant_id == "45"  # string id convention
     assert item.size == "4U"
     assert item.color == "Đỏ"
 

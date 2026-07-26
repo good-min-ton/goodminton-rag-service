@@ -93,9 +93,18 @@ TOOL_SCHEMAS = [
                         "items": {
                             "type": "object",
                             "properties": {
-                                "product_id": {"type": "integer", "description": "ID sản phẩm (từ danh sách hợp lệ)."},
-                                "variant_id": {"type": "integer", "description": "ID variant (lấy từ get_pricing)."},
-                                "quantity": {"type": "integer", "description": "Số lượng, >= 1."},
+                                "product_id": {
+                                    "type": "integer",
+                                    "description": "ID sản phẩm (từ danh sách hợp lệ).",
+                                },
+                                "variant_id": {
+                                    "type": "integer",
+                                    "description": "ID variant (lấy từ get_pricing).",
+                                },
+                                "quantity": {
+                                    "type": "integer",
+                                    "description": "Số lượng, >= 1.",
+                                },
                             },
                             "required": ["product_id", "variant_id", "quantity"],
                         },

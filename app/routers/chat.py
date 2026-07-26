@@ -249,7 +249,11 @@ def _collect_tool_products(result: str, out: list[dict]) -> None:
         return
     seen = {p["id"] for p in out}
     for item in data:
-        if isinstance(item, dict) and item.get("product_id") is not None and item.get("name"):
+        if (
+            isinstance(item, dict)
+            and item.get("product_id") is not None
+            and item.get("name")
+        ):
             pid = str(item["product_id"])
             if pid not in seen:
                 seen.add(pid)

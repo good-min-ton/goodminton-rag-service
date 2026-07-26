@@ -62,8 +62,8 @@ async def test_prepare_order_success_draft_prices_total_in_stock():
     assert draft["warnings"] == []
     assert len(draft["items"]) == 1
     line = draft["items"][0]
-    assert line["product_id"] == "12"      # string
-    assert line["variant_id"] == "45"      # string
+    assert line["product_id"] == "12"  # string
+    assert line["variant_id"] == "45"  # string
     assert line["product_name"] == "Vợt Yonex Astrox 100ZZ"
     assert line["size"] == "4U"
     assert line["color"] == "Đỏ"
@@ -83,7 +83,7 @@ async def test_prepare_order_saleprice_precedence():
         {"items": [{"product_id": 12, "variant_id": 45, "quantity": 1}]},
     )
     line = json.loads(out)["items"][0]
-    assert line["unit_price"] == 2500000.0   # salePrice wins
+    assert line["unit_price"] == 2500000.0  # salePrice wins
     assert line["line_total"] == 2500000.0
 
 
