@@ -18,6 +18,7 @@ from app.routers import search as search_router
 from app.services.description import DescriptionService
 from app.services.embed_client import EmbedClient
 from app.services.embedding import EmbeddingService
+from app.services.image_indexer import ImageIndexer
 from app.services.image_search import ImageSearchService
 from app.services.indexer import ProductIndexer
 from app.services.llm import LLMService
@@ -41,6 +42,7 @@ async def lifespan(app: FastAPI):
     product_client = ProductClient(http_client)
     embed_client = EmbedClient(http_client)
     indexer = ProductIndexer(pool, embedding, product_client)
+    image_indexer = ImageIndexer(pool, embed_client, product_client, http_client)
     consumer = ProductConsumer(indexer)
     similar_svc = SimilarProductsService(pool)
     tool_dispatcher = ToolDispatcher(product_client, similar_svc)
@@ -51,6 +53,7 @@ async def lifespan(app: FastAPI):
     app.state.retrieval = RetrievalService(pool)
     app.state.llm = LLMService(http_client)
     app.state.indexer = indexer
+    app.state.image_indexer = image_indexer
     app.state.consumer = consumer
     app.state.tool_dispatcher = tool_dispatcher
     app.state.similar = similar_svc
