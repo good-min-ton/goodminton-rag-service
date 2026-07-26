@@ -42,9 +42,14 @@ class ImageIndexer:
         """Embed every image; atomic replace over successes. Returns embedded count.
 
         Per-image failures are skipped (H9). If ALL fail, existing rows are kept
-        (no wipe) and 0 is returned.
+        (no wipe) and 0 is returned. If the product genuinely has zero images
+        (e.g. last image was deleted), existing rows ARE wiped.
         """
         images = await self._client.get_product_images(product_id)
+        if not images:  # genuinely zero images -> remove any stale rows
+            await self.delete_product_images(product_id)
+            return 0
+
         embedded: list[tuple[int, str, list[float]]] = []
         for img in images:
             resource_id = img["resourceId"]

@@ -78,6 +78,36 @@ async def test_all_images_fail_does_not_wipe_existing(
 
 
 @pytest.mark.asyncio
+async def test_zero_images_wipes_existing(
+    truncate_image_embeddings, make_embedding_768
+):
+    from tests.conftest import seed_image_embedding
+
+    pool = truncate_image_embeddings
+    # Pre-existing indexed row for product 5, but the product now has 0 images
+    # (e.g. the last image was deleted).
+    await seed_image_embedding(
+        pool, 99, 5, "http://cdn/old.jpg", make_embedding_768({0: 1.0})
+    )
+
+    pc = AsyncMock()
+    pc.get_product_images.return_value = []
+    embed = AsyncMock()
+
+    async with _http_client() as http:
+        indexer = ImageIndexer(pool, embed, pc, http)
+        n = await indexer.index_product_images(5)
+
+    assert n == 0
+    embed.embed_image.assert_not_called()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT resource_id FROM product_image_embeddings WHERE product_id = 5"
+        )
+    assert rows == []  # stale row wiped, unlike the all-fail case (H9)
+
+
+@pytest.mark.asyncio
 async def test_delete_product_images_removes_rows(
     truncate_image_embeddings, make_embedding_768
 ):
