@@ -99,6 +99,52 @@ def make_embedding():
     return _make_embedding
 
 
+# --- Image search (product_image_embeddings, vector(768)) ---
+_ENSURE_IMAGE_SCHEMA_SQL = """
+CREATE EXTENSION IF NOT EXISTS vector;
+CREATE TABLE IF NOT EXISTS product_image_embeddings (
+    resource_id INTEGER PRIMARY KEY,
+    product_id INTEGER NOT NULL,
+    url TEXT,
+    embedding VECTOR(768)
+);
+"""
+
+
+def _make_embedding_768(dims: dict[int, float]) -> list[float]:
+    """Build a 768-dim vector: mostly-zero with a few set dims for exact cosine control."""
+    vec = [0.0] * 768
+    for i, v in dims.items():
+        vec[i] = v
+    return vec
+
+
+@pytest_asyncio.fixture
+async def truncate_image_embeddings(pg_pool):
+    async with pg_pool.acquire() as conn:
+        await conn.execute(_ENSURE_IMAGE_SCHEMA_SQL)
+        await conn.execute("TRUNCATE product_image_embeddings;")
+    yield pg_pool
+
+
+@pytest.fixture
+def make_embedding_768():
+    return _make_embedding_768
+
+
+async def seed_image_embedding(pool, resource_id, product_id, url, embedding):
+    """Insert one product_image_embeddings row; embedding is a list[float] len 768."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO product_image_embeddings "
+            "(resource_id, product_id, url, embedding) VALUES ($1, $2, $3, $4)",
+            resource_id,
+            product_id,
+            url,
+            embedding,
+        )
+
+
 @pytest_asyncio.fixture
 async def similar_client(truncate_kb):
     """ASGI client with ONLY app.state.similar wired to a real DB-backed service.
