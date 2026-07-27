@@ -84,3 +84,39 @@ async def test_no_category_preserves_global_search(truncate_kb, make_embedding):
     svc = RetrievalService(pool)
     chunks = await svc.search(make_embedding({0: 1.0}), k=4)
     assert len(chunks) == 4  # unfiltered, current behavior
+
+
+async def test_category_filter_admits_static_docs(truncate_kb, make_embedding):
+    """A category filter carried over from prior conversation state (e.g. the
+    user asked about pants, then asks a policy question) must still surface
+    static/help docs, which have no category of their own. Only products are
+    restricted to the requested categories."""
+    pool = truncate_kb
+    async with pool.acquire() as conn:
+        # Matching-category product -> passes the category filter directly.
+        await conn.execute(
+            "INSERT INTO kb_chunks (doc_type, source_id, chunk_index, content, metadata, embedding) "
+            "VALUES ('product', '101', 0, 'Sản phẩm: P101', '{\"category\": \"Quần cầu lông\"}'::jsonb, $1)",
+            make_embedding({0: 1.0}),
+        )
+        # Different-category product -> must stay excluded.
+        await conn.execute(
+            "INSERT INTO kb_chunks (doc_type, source_id, chunk_index, content, metadata, embedding) "
+            "VALUES ('product', '201', 0, 'Sản phẩm: P201', '{\"category\": \"Giày cầu lông\"}'::jsonb, $1)",
+            make_embedding({2: 1.0}),
+        )
+        # Static/help doc, no category -> must be admitted regardless of the filter.
+        await conn.execute(
+            "INSERT INTO kb_chunks (doc_type, source_id, chunk_index, content, metadata, embedding) "
+            "VALUES ('static', 'policy-1', 0, 'Chính sách bảo hành...', '{}'::jsonb, $1)",
+            make_embedding({1: 1.0}),
+        )
+
+    svc = RetrievalService(pool)
+    chunks = await svc.search(
+        make_embedding({0: 1.0}), k=3, categories=["Quần cầu lông"]
+    )
+    ids = {(c.doc_type, c.source_id) for c in chunks}
+    assert ("static", "policy-1") in ids  # not filtered out despite no category
+    assert ("product", "101") in ids  # matching category still included
+    assert ("product", "201") not in ids  # different-category product excluded

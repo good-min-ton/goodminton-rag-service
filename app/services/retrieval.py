@@ -55,7 +55,9 @@ class RetrievalService:
             where.append(f"doc_type = ${len(params)}")
         if categories:
             params.append(categories)
-            where.append(f"metadata->>'category' = ANY(${len(params)}::text[])")
+            where.append(
+                f"(doc_type <> 'product' OR metadata->>'category' = ANY(${len(params)}::text[]))"
+            )
         params.append(top_k)
         limit_pos = len(params)
         where_sql = ("WHERE " + " AND ".join(where)) if where else ""

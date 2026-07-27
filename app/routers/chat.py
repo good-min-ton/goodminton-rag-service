@@ -248,7 +248,11 @@ async def _sort_by_price(http_client, ids: list[int]) -> list[int]:
         try:
             data = await client.get_pricing(pid)
             variants = data.get("variants") or []
-            prices = [v.get("price") for v in variants if v.get("price") is not None]
+            prices = [
+                v.get("salePrice") if v.get("salePrice") is not None else v.get("price")
+                for v in variants
+            ]
+            prices = [p for p in prices if p is not None]
             priced.append((min(prices) if prices else float("inf"), pid))
         except Exception:  # noqa: BLE001 — degrade gracefully
             priced.append((float("inf"), pid))
