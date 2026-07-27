@@ -26,14 +26,14 @@ def next_order_status(
     current: str | None,
     qu: QueryUnderstanding,
     order_draft_emitted: bool,
-    order_placed_id: int | None,
+    order_just_placed: bool,
 ) -> str:
     cur = current or BROWSING
     if order_draft_emitted:  # a fresh draft = an active order -> always WAITING
         return WAITING_CONFIRMATION
     if qu.categories and cur != BROWSING:  # new browse resets order context
         return BROWSING
-    if order_placed_id is not None:
+    if order_just_placed:
         return ORDER_CONFIRMED
     return cur
 

@@ -97,11 +97,15 @@ async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
     ):
         state = await state_store.load(request.session_id)
         qu = await qu_svc.analyze(query, state)
+        just_placed = (
+            request.order_placed_id is not None
+            and request.order_placed_id != state.last_confirmed_order_id
+        )
         incoming_status = next_order_status(
             state.order_status,
             qu,
             order_draft_emitted=False,
-            order_placed_id=request.order_placed_id,
+            order_just_placed=just_placed,
         )
 
         with langfuse.start_as_current_observation(
@@ -157,7 +161,7 @@ async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
 
         order_draft_emitted = order_draft is not None
         final_status = next_order_status(
-            incoming_status, qu, order_draft_emitted, request.order_placed_id
+            state.order_status, qu, order_draft_emitted, order_just_placed=just_placed
         )
 
         display = _structured_display_products(
@@ -183,6 +187,8 @@ async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
         state.categories = qu.categories or state.categories
         state.intent = qu.intent
         state.price_preference = qu.price_preference
+        if just_placed:
+            state.last_confirmed_order_id = request.order_placed_id
         state.order_status = final_status
         await state_store.save(request.session_id, state)
 

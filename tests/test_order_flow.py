@@ -16,7 +16,7 @@ def _qu(categories=None):
 def test_browsing_plus_draft_enters_waiting():
     assert (
         next_order_status(
-            BROWSING, _qu(), order_draft_emitted=True, order_placed_id=None
+            BROWSING, _qu(), order_draft_emitted=True, order_just_placed=False
         )
         == WAITING_CONFIRMATION
     )
@@ -25,7 +25,10 @@ def test_browsing_plus_draft_enters_waiting():
 def test_waiting_plus_placed_id_confirms():
     assert (
         next_order_status(
-            WAITING_CONFIRMATION, _qu(), order_draft_emitted=False, order_placed_id=55
+            WAITING_CONFIRMATION,
+            _qu(),
+            order_draft_emitted=False,
+            order_just_placed=True,
         )
         == ORDER_CONFIRMED
     )
@@ -37,7 +40,7 @@ def test_waiting_plus_new_category_resets_to_browsing():
             WAITING_CONFIRMATION,
             _qu(["Áo cầu lông"]),
             order_draft_emitted=False,
-            order_placed_id=None,
+            order_just_placed=False,
         )
         == BROWSING
     )
@@ -49,7 +52,7 @@ def test_confirmed_plus_new_category_resets_to_browsing():
             ORDER_CONFIRMED,
             _qu(["Giày cầu lông"]),
             order_draft_emitted=False,
-            order_placed_id=None,
+            order_just_placed=False,
         )
         == BROWSING
     )
@@ -62,7 +65,7 @@ def test_new_category_while_already_browsing_stays_browsing():
             BROWSING,
             _qu(["Quần cầu lông"]),
             order_draft_emitted=False,
-            order_placed_id=None,
+            order_just_placed=False,
         )
         == BROWSING
     )
@@ -72,7 +75,7 @@ def test_draft_outranks_stale_placed_id():
     # new order started after a prior placement (stale id resent) -> WAITING, not CONFIRMED
     assert (
         next_order_status(
-            ORDER_CONFIRMED, _qu(), order_draft_emitted=True, order_placed_id=99
+            ORDER_CONFIRMED, _qu(), order_draft_emitted=True, order_just_placed=True
         )
         == WAITING_CONFIRMATION
     )
@@ -81,7 +84,10 @@ def test_draft_outranks_stale_placed_id():
 def test_waiting_no_signal_stays_waiting():
     assert (
         next_order_status(
-            WAITING_CONFIRMATION, _qu(), order_draft_emitted=False, order_placed_id=None
+            WAITING_CONFIRMATION,
+            _qu(),
+            order_draft_emitted=False,
+            order_just_placed=False,
         )
         == WAITING_CONFIRMATION
     )
@@ -89,7 +95,9 @@ def test_waiting_no_signal_stays_waiting():
 
 def test_none_current_defaults_browsing():
     assert (
-        next_order_status(None, _qu(), order_draft_emitted=False, order_placed_id=None)
+        next_order_status(
+            None, _qu(), order_draft_emitted=False, order_just_placed=False
+        )
         == BROWSING
     )
 
@@ -115,7 +123,21 @@ def test_draft_outranks_new_category_same_turn():
             WAITING_CONFIRMATION,
             _qu(["Áo cầu lông"]),
             order_draft_emitted=True,
-            order_placed_id=None,
+            order_just_placed=False,
         )
         == WAITING_CONFIRMATION
+    )
+
+
+def test_resent_placement_does_not_block_new_browse():
+    # A resent (already-confirmed) placement must NOT be treated as just_placed,
+    # so a new category from ORDER_CONFIRMED resets to BROWSING (not re-confirm).
+    assert (
+        next_order_status(
+            ORDER_CONFIRMED,
+            _qu(["Vợt cầu lông"]),
+            order_draft_emitted=False,
+            order_just_placed=False,
+        )
+        == BROWSING
     )

@@ -20,6 +20,7 @@ class ConversationState(BaseModel):
     # RESERVED for Spec 2 (order flow) — unused in the Foundation.
     selected_product_id: int | None = None
     order_status: str = "BROWSING"
+    last_confirmed_order_id: int | None = None
 
 
 class ConversationStateStore:
