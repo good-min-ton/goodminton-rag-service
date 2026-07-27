@@ -38,3 +38,12 @@ class ProductClient:
         )
         r.raise_for_status()
         return r.json()
+
+    async def get_product_images(self, product_id: int) -> list[dict]:
+        r = await self._client.get(
+            f"{settings.shop_api_url}/api/internal/products/{product_id}/images",
+            headers=self._headers(),
+            timeout=10.0,
+        )
+        r.raise_for_status()
+        return r.json()

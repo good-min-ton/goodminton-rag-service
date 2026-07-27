@@ -7,6 +7,7 @@ import aio_pika
 from aio_pika.abc import AbstractIncomingMessage
 
 from app.core.config import settings
+from app.services.image_indexer import ImageIndexer
 from app.services.indexer import ProductIndexer
 
 log = logging.getLogger(__name__)
@@ -15,8 +16,9 @@ SEMANTIC_FIELDS = {"name", "description", "specs", "brand", "category"}
 
 
 class ProductConsumer:
-    def __init__(self, indexer: ProductIndexer):
+    def __init__(self, indexer: ProductIndexer, image_indexer: ImageIndexer):
         self._indexer = indexer
+        self._image_indexer = image_indexer
         self._connection: aio_pika.abc.AbstractRobustConnection | None = None
 
     async def start(self) -> None:
@@ -61,17 +63,20 @@ class ProductConsumer:
 
         if action == "deleted":
             await self._indexer.delete_product(product_id)
+            await self._image_indexer.delete_product_images(product_id)
             return
 
         if action in ("created", "updated"):
-            if not fields & SEMANTIC_FIELDS:
+            if fields & SEMANTIC_FIELDS:
+                await self._indexer.index_product(product_id)
+            if "images" in fields:
+                await self._image_indexer.index_product_images(product_id)
+            if not (fields & SEMANTIC_FIELDS) and "images" not in fields:
                 log.debug(
-                    "Skip product %s — no semantic fields changed (%s)",
+                    "Skip product %s — no indexed fields changed (%s)",
                     product_id,
                     fields,
                 )
-                return
-            await self._indexer.index_product(product_id)
             return
 
         log.warning("Unknown action '%s' for product %s", action, product_id)

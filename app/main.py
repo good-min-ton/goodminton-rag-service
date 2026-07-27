@@ -14,8 +14,12 @@ from app.messaging.product_consumer import ProductConsumer
 from app.models.schemas import HealthResponse
 from app.routers import chat as chat_router
 from app.routers import products as products_router
+from app.routers import search as search_router
 from app.services.description import DescriptionService
+from app.services.embed_client import EmbedClient
 from app.services.embedding import EmbeddingService
+from app.services.image_indexer import ImageIndexer
+from app.services.image_search import ImageSearchService
 from app.services.indexer import ProductIndexer
 from app.services.llm import LLMService
 from app.services.product_client import ProductClient
@@ -44,8 +48,10 @@ async def lifespan(app: FastAPI):
 
     embedding = EmbeddingService(http_client)
     product_client = ProductClient(http_client)
+    embed_client = EmbedClient(http_client)
     indexer = ProductIndexer(pool, embedding, product_client)
-    consumer = ProductConsumer(indexer)
+    image_indexer = ImageIndexer(pool, embed_client, product_client, http_client)
+    consumer = ProductConsumer(indexer, image_indexer)
     similar_svc = SimilarProductsService(pool)
     tool_dispatcher = ToolDispatcher(product_client, similar_svc)
 
@@ -59,12 +65,15 @@ async def lifespan(app: FastAPI):
 
     app.state.query_understanding = QueryUnderstandingService(app.state.llm)
     app.state.indexer = indexer
+    app.state.image_indexer = image_indexer
     app.state.consumer = consumer
     app.state.tool_dispatcher = tool_dispatcher
     app.state.similar = similar_svc
     app.state.description = DescriptionService(
         llm=app.state.llm, product_client=product_client
     )
+    app.state.embed = embed_client
+    app.state.image_search = ImageSearchService(pool)
 
     from app.services.conversation_state import ConversationStateStore
 
@@ -102,6 +111,7 @@ app.add_middleware(
 
 app.include_router(chat_router.router)
 app.include_router(products_router.router)
+app.include_router(search_router.router)
 
 
 @app.get("/health", response_model=HealthResponse)
