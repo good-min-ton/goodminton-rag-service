@@ -19,7 +19,7 @@ class ConversationState(BaseModel):
     price_preference: str | None = None
     # RESERVED for Spec 2 (order flow) — unused in the Foundation.
     selected_product_id: int | None = None
-    order_status: str | None = None
+    order_status: str = "BROWSING"
 
 
 class ConversationStateStore:
