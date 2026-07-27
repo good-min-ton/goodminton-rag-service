@@ -34,6 +34,14 @@ async def lifespan(app: FastAPI):
     pool = await create_pool()
     http_client = httpx.AsyncClient()
 
+    import redis.asyncio as aioredis  # local import keeps module import cheap
+
+    redis_client = (
+        aioredis.from_url(settings.redis_url, decode_responses=True)
+        if settings.redis_url
+        else None
+    )
+
     embedding = EmbeddingService(http_client)
     product_client = ProductClient(http_client)
     indexer = ProductIndexer(pool, embedding, product_client)
@@ -54,11 +62,20 @@ async def lifespan(app: FastAPI):
         llm=app.state.llm, product_client=product_client
     )
 
+    from app.services.conversation_state import ConversationStateStore
+
+    app.state.redis = redis_client
+    app.state.conversation_state = ConversationStateStore(redis_client).with_ttl(
+        settings.chat_state_ttl_seconds
+    )
+
     await consumer.start()
 
     yield
 
     await consumer.stop()
+    if redis_client is not None:
+        await redis_client.aclose()
     await http_client.aclose()
     await pool.close()
     langfuse.flush()
