@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 
 from fastapi import APIRouter, HTTPException, Request
 from langfuse import propagate_attributes
@@ -27,6 +28,52 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 
 MAX_TOOL_ITERATIONS = 10
 MAX_REPEATED_CALLS = 3
+
+SANITIZE_FALLBACK = "Xin lỗi, bạn cho mình xin lại yêu cầu một chút nhé?"
+_TOOL_NAMES: set[str] = {s["function"]["name"] for s in TOOL_SCHEMAS}
+
+
+def _recover_tool_call(content: str, tool_names: set[str]) -> dict | None:
+    """Parse a tool call the model emitted as JSON text in `content` (3B often
+    does this instead of the structured tool_calls field). Returns
+    {"name", "arguments"} ONLY when the JSON names a known tool with an args
+    object; never guesses a tool from bare args. Returns None otherwise."""
+    text = content.strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text[:4].lower() == "json":
+            text = text[4:]
+        text = text.strip()
+    try:
+        data = json.loads(text)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    fn = data["function"] if isinstance(data.get("function"), dict) else data
+    name = fn.get("name")
+    args = fn.get("arguments")
+    if name in tool_names and isinstance(args, dict):
+        return {"name": name, "arguments": args}
+    return None
+
+
+def _sanitize_answer(text: str) -> str:
+    """Strip a predominantly-JSON answer so tool-call/JSON text never reaches the
+    user. Conservative: only touches answers that start with '{' or a code fence
+    (normal prose, incl. prices, is returned unchanged). Empty result -> fallback."""
+    stripped = text.strip()
+    if not stripped:
+        return SANITIZE_FALLBACK
+    if not (stripped.startswith("{") or stripped.startswith("```")):
+        return text
+    try:
+        json.loads(stripped)
+        return SANITIZE_FALLBACK  # the whole answer is a JSON blob
+    except (ValueError, TypeError):
+        pass
+    cleaned = re.sub(r"```(?:json)?.*?```", "", stripped, flags=re.DOTALL).strip()
+    return cleaned if cleaned else SANITIZE_FALLBACK
 
 
 @router.post("")
