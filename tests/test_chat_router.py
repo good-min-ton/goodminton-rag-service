@@ -1,7 +1,66 @@
 import json
 from unittest.mock import AsyncMock
 
-from app.routers.chat import _parse_order_draft, _run_tool_loop
+from app.routers.chat import (
+    SANITIZE_FALLBACK,
+    _parse_order_draft,
+    _run_tool_loop,
+    _structured_display_products,
+)
+from app.services.order_flow import (
+    BROWSING,
+    ORDER_CONFIRMED,
+    WAITING_CONFIRMATION,
+    suppresses_recommendations,
+)
+from app.services.retrieval import Chunk
+
+
+def test_display_blanked_when_order_pending():
+    display = [1, 2, 3]
+    gated = [] if suppresses_recommendations(WAITING_CONFIRMATION) else display
+    assert gated == []
+    gated2 = [] if suppresses_recommendations(ORDER_CONFIRMED) else display
+    assert gated2 == []
+    gated3 = [] if suppresses_recommendations(BROWSING) else display
+    assert gated3 == [1, 2, 3]
+
+
+def _chunk(sid, cat="Quần cầu lông"):
+    return Chunk(
+        doc_type="product",
+        source_id=sid,
+        chunk_index=0,
+        content=f"Sản phẩm: P{sid}",
+        distance=0.1,
+    )
+
+
+def test_structured_display_products_from_chunks_capped_deduped():
+    chunks = [
+        _chunk("101"),
+        _chunk("101"),
+        _chunk("102"),
+        _chunk("103"),
+        _chunk("104"),
+        _chunk("105"),
+    ]
+    ids = _structured_display_products(chunks, tool_products=[], cap=4)
+    assert ids == [101, 102, 103, 104]  # retrieval order, deduped, capped, ints
+
+
+def test_structured_display_products_prefers_tool_products():
+    chunks = [_chunk("101")]
+    tool_products = [{"id": "201", "name": "X"}, {"id": "202", "name": "Y"}]
+    ids = _structured_display_products(chunks, tool_products=tool_products, cap=4)
+    assert ids[:2] == [201, 202]  # recommend_similar_products results lead
+
+
+def test_structured_display_products_ignores_non_numeric():
+    ids = _structured_display_products(
+        [_chunk("abc"), _chunk("102")], tool_products=[], cap=4
+    )
+    assert ids == [102]
 
 
 def test_parse_order_draft_valid_dict():
@@ -146,3 +205,43 @@ async def test_run_tool_loop_repeated_calls_force_final_without_draft():
     assert (
         llm.chat_with_tools.await_count == 4
     )  # 1 fresh + 3 cache-hit repeats -> forced final at MAX_REPEATED_CALLS=3
+
+
+async def test_tool_loop_recovers_tool_call_from_content():
+    # Turn 1: model emits a get_pricing call as JSON *content* (tool_calls empty).
+    # Turn 2: model gives a natural-language answer. The loop must recover+execute
+    # the call and return the clean answer — never the raw JSON.
+    llm = AsyncMock()
+    llm.chat_with_tools.side_effect = [
+        {
+            "role": "assistant",
+            "content": '{"name": "get_pricing", "arguments": {"product_id": 12}}',
+            "tool_calls": [],
+        },
+        {
+            "role": "assistant",
+            "content": "Vợt Astrox 12 giá 1.200.000đ ạ.",
+            "tool_calls": [],
+        },
+    ]
+    dispatcher = _Dispatcher(
+        {"get_pricing": json.dumps({"productId": 12, "variants": []})}
+    )
+    answer, _, _ = await _run_tool_loop(llm, dispatcher, [])
+    assert answer == "Vợt Astrox 12 giá 1.200.000đ ạ."
+    assert dispatcher.calls == ["get_pricing"]  # recovered call was executed
+    assert "{" not in answer
+
+
+async def test_tool_loop_sanitizes_unrecoverable_json_content():
+    # Model emits bare args (no tool name) as content and no tool_calls -> not
+    # recoverable -> the answer is sanitized to the fallback, not the raw JSON.
+    llm = AsyncMock()
+    llm.chat_with_tools.return_value = {
+        "role": "assistant",
+        "content": '{"product_id": 164, "size": "M", "quantity": 1}',
+        "tool_calls": [],
+    }
+    dispatcher = _Dispatcher({})
+    answer, _, _ = await _run_tool_loop(llm, dispatcher, [])
+    assert answer == SANITIZE_FALLBACK
