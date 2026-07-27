@@ -66,6 +66,10 @@ class Settings(BaseSettings):
     embed_service_url: str = "http://localhost:8001"
     image_search_top_k: int = 12
     image_search_over_fetch_factor: int = 3  # over-fetch = top_k * this (H8)
+    # Max cosine distance for an image match; products beyond this are dropped so
+    # an unrelated query image returns nothing. 0/negative disables the filter.
+    # Calibrated from live data (matches ~0.09, unrelated ~0.31+). Tunable via env.
+    image_search_max_distance: float = 0.30
     image_max_upload_bytes: int = 8 * 1024 * 1024  # 8 MB outer cap
 
     @property
