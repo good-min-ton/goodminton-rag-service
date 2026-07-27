@@ -25,6 +25,12 @@ class Settings(BaseSettings):
     retrieval_top_k: int = 5
     min_query_length: int = 2
 
+    # Chatbot conversation state (Redis) + display cards.
+    # redis_url e.g. redis://:pass@redis:6379/0 ; None => stateless degrade.
+    redis_url: str | None = None
+    chat_state_ttl_seconds: int = 3600
+    chat_display_products_max: int = 4
+
     # Similar Products
     similar_products_top_k: int = 5
     similar_products_max_limit: int = 50

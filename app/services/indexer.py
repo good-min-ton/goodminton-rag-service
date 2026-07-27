@@ -1,5 +1,6 @@
 """Product indexer — fetches product data from shop-api, embeds, and upserts kb_chunks."""
 
+import json
 import logging
 import re
 
@@ -72,6 +73,9 @@ class ProductIndexer:
         chunks = self._splitter.split_text(text)
         source_id = str(product_id)
 
+        category = product.get("category")
+        metadata_json = json.dumps({"category": category} if category else {})
+
         async with self._pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(
@@ -83,12 +87,13 @@ class ProductIndexer:
                     await conn.execute(
                         """
                         INSERT INTO kb_chunks
-                            (doc_type, source_id, chunk_index, content, embedding)
-                        VALUES ('product', $1, $2, $3, $4)
+                            (doc_type, source_id, chunk_index, content, metadata, embedding)
+                        VALUES ('product', $1, $2, $3, $4::jsonb, $5)
                         """,
                         source_id,
                         idx,
                         chunk,
+                        metadata_json,
                         embedding,
                     )
 

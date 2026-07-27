@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 
 from fastapi import APIRouter, HTTPException, Request
 from langfuse import propagate_attributes
@@ -12,6 +13,12 @@ from app.core.tracing import langfuse
 from app.models.schemas import ChatRequest, ChatResponse, SourceRef
 from app.services.embedding import EmbeddingService
 from app.services.llm import LLMService
+from app.services.order_flow import (
+    BROWSING,
+    next_order_status,
+    order_directive,
+    suppresses_recommendations,
+)
 from app.services.retrieval import Chunk, RetrievalService
 from app.services.tools import TOOL_SCHEMAS, ToolDispatcher
 
@@ -22,6 +29,52 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 MAX_TOOL_ITERATIONS = 10
 MAX_REPEATED_CALLS = 3
 
+SANITIZE_FALLBACK = "Xin lỗi, bạn cho mình xin lại yêu cầu một chút nhé?"
+_TOOL_NAMES: set[str] = {s["function"]["name"] for s in TOOL_SCHEMAS}
+
+
+def _recover_tool_call(content: str, tool_names: set[str]) -> dict | None:
+    """Parse a tool call the model emitted as JSON text in `content` (3B often
+    does this instead of the structured tool_calls field). Returns
+    {"name", "arguments"} ONLY when the JSON names a known tool with an args
+    object; never guesses a tool from bare args. Returns None otherwise."""
+    text = content.strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text[:4].lower() == "json":
+            text = text[4:]
+        text = text.strip()
+    try:
+        data = json.loads(text)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    fn = data["function"] if isinstance(data.get("function"), dict) else data
+    name = fn.get("name")
+    args = fn.get("arguments")
+    if name in tool_names and isinstance(args, dict):
+        return {"name": name, "arguments": args}
+    return None
+
+
+def _sanitize_answer(text: str) -> str:
+    """Strip a predominantly-JSON answer so tool-call/JSON text never reaches the
+    user. Conservative: only touches answers that start with '{' or a code fence
+    (normal prose, incl. prices, is returned unchanged). Empty result -> fallback."""
+    stripped = text.strip()
+    if not stripped:
+        return SANITIZE_FALLBACK
+    if not (stripped.startswith("{") or stripped.startswith("```")):
+        return text
+    try:
+        json.loads(stripped)
+        return SANITIZE_FALLBACK  # the whole answer is a JSON blob
+    except (ValueError, TypeError):
+        pass
+    cleaned = re.sub(r"```(?:json)?.*?```", "", stripped, flags=re.DOTALL).strip()
+    return cleaned if cleaned else SANITIZE_FALLBACK
+
 
 @router.post("")
 async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
@@ -29,6 +82,8 @@ async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
     retrieval_svc: RetrievalService = http_request.app.state.retrieval
     llm_svc: LLMService = http_request.app.state.llm
     tool_dispatcher: ToolDispatcher = http_request.app.state.tool_dispatcher
+    state_store = http_request.app.state.conversation_state
+    qu_svc = http_request.app.state.query_understanding
 
     query = request.message.strip()
     if len(query) < settings.min_query_length:
@@ -40,18 +95,33 @@ async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
             name="chat", as_type="span", input=query
         ) as root,
     ):
+        state = await state_store.load(request.session_id)
+        qu = await qu_svc.analyze(query, state)
+        just_placed = (
+            request.order_placed_id is not None
+            and request.order_placed_id != state.last_confirmed_order_id
+        )
+        incoming_status = next_order_status(
+            state.order_status,
+            qu,
+            order_draft_emitted=False,
+            order_just_placed=just_placed,
+        )
+
         with langfuse.start_as_current_observation(
             name="embed",
             as_type="embedding",
-            input=query,
+            input=qu.retrieval_query,
             model=settings.embedding_model,
         ):
-            query_vec = await embedding_svc.embed(query)
+            query_vec = await embedding_svc.embed(qu.retrieval_query)
 
         with langfuse.start_as_current_observation(
-            name="retrieval", as_type="retriever", input=query
+            name="retrieval", as_type="retriever", input=qu.retrieval_query
         ) as rspan:
-            chunks = await retrieval_svc.search(query_vec)
+            chunks = await retrieval_svc.search(
+                query_vec, categories=qu.categories or None
+            )
             rspan.update(
                 output=[
                     {"doc_type": c.doc_type, "source_id": c.source_id} for c in chunks
@@ -59,14 +129,17 @@ async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
             )
 
         context = _format_context(chunks)
-        product_ids = _extract_product_ids(chunks)
+        catalog = _extract_product_catalog(chunks)
 
         system_content = SYSTEM_PROMPT.format(context=context)
-        if product_ids:
+        if catalog:
+            listing = "\n".join(
+                f"- {pid}: {name}" if name else f"- {pid}" for pid, name in catalog
+            )
             system_content += (
-                "\n\nDanh sách product_id hợp lệ để gọi tool (KHÔNG nhắc ID trong câu "
-                "trả lời, KHÔNG dùng ID ngoài danh sách này):\n"
-                + ", ".join(product_ids)
+                "\n\nDanh sách sản phẩm hợp lệ để gọi tool. Chọn ĐÚNG product_id ứng "
+                "với TÊN sản phẩm khách hỏi; KHÔNG nhắc ID trong câu trả lời, KHÔNG "
+                "dùng ID ngoài danh sách này:\n" + listing
             )
         else:
             system_content += (
@@ -74,6 +147,8 @@ async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
                 "ra; nếu khách hỏi giá hoặc tồn kho, trả lời rằng bạn không tìm thấy "
                 "sản phẩm phù hợp."
             )
+
+        system_content += order_directive(incoming_status)
 
         messages: list[dict] = [{"role": "system", "content": system_content}]
         for m in request.chat_history:
@@ -83,14 +158,50 @@ async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
         answer, tool_products, order_draft = await _run_tool_loop(
             llm_svc, tool_dispatcher, messages
         )
-        answer, recommended = _extract_recommended(answer, chunks, tool_products)
+
+        order_draft_emitted = order_draft is not None
+        final_status = next_order_status(
+            state.order_status, qu, order_draft_emitted, order_just_placed=just_placed
+        )
+
+        display = _structured_display_products(
+            chunks, tool_products, settings.chat_display_products_max
+        )
+        if suppresses_recommendations(final_status) or not qu.product_query:
+            display = []  # no new-product cards while an order is pending/placed
+        elif qu.price_preference == "cheapest" and display:
+            display = await _sort_by_price(http_request.app.state.http, display)
+
+        # Remember the product under order; clear it when the user moves on to browsing.
+        if order_draft_emitted:
+            items = order_draft.get("items") or []
+            if items:
+                try:
+                    state.selected_product_id = int(items[0]["product_id"])
+                except (KeyError, ValueError, TypeError):
+                    pass
+        if final_status == BROWSING:
+            state.selected_product_id = None
+
+        # Persist scope + order status for the next turn.
+        state.categories = qu.categories or state.categories
+        state.intent = qu.intent
+        state.price_preference = qu.price_preference
+        if just_placed:
+            state.last_confirmed_order_id = request.order_placed_id
+        state.order_status = final_status
+        await state_store.save(request.session_id, state)
 
         root.update(output=answer)
         return ChatResponse(
             answer=answer,
             sources=_unique_sources(chunks),
-            products=recommended,
+            products=[str(i) for i in display],  # legacy mirror
             order_draft=order_draft,
+            intent=qu.intent,
+            categories=qu.categories,
+            display_products=display,
+            conversation_state=state,
         )
 
 
@@ -128,7 +239,14 @@ async def _run_tool_loop(
         )
 
         if not tool_calls:
-            return msg.get("content") or "", tool_products, order_draft
+            content = msg.get("content") or ""
+            recovered = _recover_tool_call(content, _TOOL_NAMES)
+            if recovered is None:
+                return _sanitize_answer(content), tool_products, order_draft
+            # 3B emitted the call as text — honor it: synthesize a structured call
+            # and fall through to the normal execution block below.
+            tool_calls = [{"function": recovered}]
+            msg = {"role": "assistant", "content": "", "tool_calls": tool_calls}
 
         messages.append(msg)
 
@@ -179,7 +297,7 @@ async def _run_tool_loop(
             ) as gen:
                 final = await llm.chat(messages)
                 gen.update(output=final)
-            return final, tool_products, order_draft
+            return _sanitize_answer(final), tool_products, order_draft
 
     log.warning("Tool loop hit max iterations (%d)", MAX_TOOL_ITERATIONS)
     return (
@@ -187,6 +305,52 @@ async def _run_tool_loop(
         tool_products,
         order_draft,
     )
+
+
+def _structured_display_products(
+    chunks: list[Chunk], tool_products: list[dict], cap: int
+) -> list[int]:
+    """The product ids to render as cards, from STRUCTURED sources (not prose):
+    recommend_similar_products results first, then retrieved product chunks, in
+    order, deduped, numeric-only, capped. Replaces the substring scrape."""
+    ordered: list[str] = [p["id"] for p in tool_products if p.get("id")]
+    ordered += [c.source_id for c in chunks if c.doc_type == "product"]
+    out: list[int] = []
+    seen: set[int] = set()
+    for sid in ordered:
+        try:
+            n = int(sid)
+        except (TypeError, ValueError):
+            continue
+        if n > 0 and n not in seen:
+            seen.add(n)
+            out.append(n)
+        if len(out) >= cap:
+            break
+    return out
+
+
+async def _sort_by_price(http_client, ids: list[int]) -> list[int]:
+    """Sort candidate ids ascending by live price (shop-api). On any failure keep
+    the original order — never empty the list because pricing was unavailable."""
+    from app.services.product_client import ProductClient
+
+    client = ProductClient(http_client)
+    priced: list[tuple[float, int]] = []
+    for pid in ids:
+        try:
+            data = await client.get_pricing(pid)
+            variants = data.get("variants") or []
+            prices = [
+                v.get("salePrice") if v.get("salePrice") is not None else v.get("price")
+                for v in variants
+            ]
+            prices = [p for p in prices if p is not None]
+            priced.append((min(prices) if prices else float("inf"), pid))
+        except Exception:  # noqa: BLE001 — degrade gracefully
+            priced.append((float("inf"), pid))
+    priced.sort(key=lambda t: t[0])
+    return [pid for _, pid in priced]
 
 
 def _unique_sources(chunks: list[Chunk]) -> list[SourceRef]:
@@ -214,31 +378,6 @@ def _chunk_product_name(c: Chunk) -> str:
     return first_line[len(prefix) :].strip() if first_line.startswith(prefix) else ""
 
 
-_NAME_PREFIXES = (
-    "vợt cầu lông ",
-    "giày cầu lông ",
-    "áo cầu lông ",
-    "quần cầu lông ",
-    "balo cầu lông ",
-    "túi cầu lông ",
-    "set vợt cầu lông ",
-)
-
-
-def _name_core(name: str) -> str:
-    """Distinctive core of a product name: drop the category prefix and the
-    'chính hãng' suffix so a shortened mention in the answer still matches."""
-    s = name.strip().lower()
-    for p in _NAME_PREFIXES:
-        if s.startswith(p):
-            s = s[len(p) :]
-            break
-    for suf in (" chính hãng", " chinh hang"):
-        if s.endswith(suf):
-            s = s[: -len(suf)]
-    return s.strip()
-
-
 def _collect_tool_products(result: str, out: list[dict]) -> None:
     """Parse {product_id, name} out of a recommend_similar_products result."""
     try:
@@ -264,7 +403,7 @@ def _parse_order_draft(result: str) -> dict | None:
     """Parse a prepare_order tool result into an order_draft dict, or None.
 
     Centralized {"error": ...} payloads and non-JSON strings yield no draft
-    (present-or-absent, not inferred from prose like _extract_recommended).
+    (present-or-absent, not inferred from prose).
     """
     try:
         data = json.loads(result)
@@ -275,46 +414,19 @@ def _parse_order_draft(result: str) -> dict | None:
     return data
 
 
-def _extract_recommended(
-    answer: str, chunks: list[Chunk], tool_products: list[dict]
-) -> tuple[str, list[str]]:
-    """Product ids the answer recommends, matched by name against the products
-    it could know about — retrieved chunks + recommend_similar_products results
-    — ordered by first mention. Keeps chatbot cards consistent with the text.
+def _extract_product_catalog(chunks: list[Chunk]) -> list[tuple[str, str]]:
+    """Unique (product_id, name) pairs in retrieval order — tool-calling hints.
+
+    Pairing each id with its name lets the model pick the id that matches the
+    product the user named, instead of guessing from a bare id list.
     """
-    # Build core-name -> id (retrieval first so it wins ties, then tool results)
-    core_to_id: dict[str, str] = {}
-    for c in chunks:
-        if c.doc_type == "product":
-            nm = _chunk_product_name(c)
-            if nm:
-                core_to_id.setdefault(_name_core(nm), c.source_id)
-    for p in tool_products:
-        nm = p.get("name")
-        if nm:
-            core_to_id.setdefault(_name_core(nm), p["id"])
-
-    low = answer.lower()
-    hits: list[tuple[int, str]] = []
     seen: set[str] = set()
-    for core, pid in core_to_id.items():
-        pos = low.find(core) if core else -1
-        if pos >= 0 and pid not in seen:
-            seen.add(pid)
-            hits.append((pos, pid))
-    hits.sort()
-    return answer, [pid for _, pid in hits]
-
-
-def _extract_product_ids(chunks: list[Chunk]) -> list[str]:
-    """Unique product source_ids in retrieval order — for tool-calling hints in prompt."""
-    seen: set[str] = set()
-    out: list[str] = []
+    out: list[tuple[str, str]] = []
     for c in chunks:
         if c.doc_type != "product":
             continue
         if c.source_id in seen:
             continue
         seen.add(c.source_id)
-        out.append(c.source_id)
+        out.append((c.source_id, _chunk_product_name(c)))
     return out
