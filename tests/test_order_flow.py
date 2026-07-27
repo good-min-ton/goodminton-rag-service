@@ -105,3 +105,17 @@ def test_directive_text():
     assert "xác nhận" in order_directive(WAITING_CONFIRMATION).lower()
     assert order_directive(BROWSING) == ""
     assert "đặt" in order_directive(ORDER_CONFIRMED).lower()
+
+
+def test_draft_outranks_new_category_same_turn():
+    # From a non-BROWSING state, a turn that BOTH names a category AND emits a
+    # draft is an active order -> WAITING (suppress), not BROWSING (leak).
+    assert (
+        next_order_status(
+            WAITING_CONFIRMATION,
+            _qu(["Áo cầu lông"]),
+            order_draft_emitted=True,
+            order_placed_id=None,
+        )
+        == WAITING_CONFIRMATION
+    )

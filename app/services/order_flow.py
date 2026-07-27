@@ -29,10 +29,10 @@ def next_order_status(
     order_placed_id: int | None,
 ) -> str:
     cur = current or BROWSING
-    if qu.categories and cur != BROWSING:  # new browse resets any order context
-        return BROWSING
-    if order_draft_emitted:  # a fresh draft outranks a stale placement signal
+    if order_draft_emitted:  # a fresh draft = an active order -> always WAITING
         return WAITING_CONFIRMATION
+    if qu.categories and cur != BROWSING:  # new browse resets order context
+        return BROWSING
     if order_placed_id is not None:
         return ORDER_CONFIRMED
     return cur
