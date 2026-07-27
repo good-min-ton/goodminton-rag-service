@@ -29,6 +29,8 @@ async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
     retrieval_svc: RetrievalService = http_request.app.state.retrieval
     llm_svc: LLMService = http_request.app.state.llm
     tool_dispatcher: ToolDispatcher = http_request.app.state.tool_dispatcher
+    state_store = http_request.app.state.conversation_state
+    qu_svc = http_request.app.state.query_understanding
 
     query = request.message.strip()
     if len(query) < settings.min_query_length:
@@ -40,18 +42,23 @@ async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
             name="chat", as_type="span", input=query
         ) as root,
     ):
+        state = await state_store.load(request.session_id)
+        qu = await qu_svc.analyze(query, state)
+
         with langfuse.start_as_current_observation(
             name="embed",
             as_type="embedding",
-            input=query,
+            input=qu.retrieval_query,
             model=settings.embedding_model,
         ):
-            query_vec = await embedding_svc.embed(query)
+            query_vec = await embedding_svc.embed(qu.retrieval_query)
 
         with langfuse.start_as_current_observation(
-            name="retrieval", as_type="retriever", input=query
+            name="retrieval", as_type="retriever", input=qu.retrieval_query
         ) as rspan:
-            chunks = await retrieval_svc.search(query_vec)
+            chunks = await retrieval_svc.search(
+                query_vec, categories=qu.categories or None
+            )
             rspan.update(
                 output=[
                     {"doc_type": c.doc_type, "source_id": c.source_id} for c in chunks
@@ -86,14 +93,29 @@ async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
         answer, tool_products, order_draft = await _run_tool_loop(
             llm_svc, tool_dispatcher, messages
         )
-        answer, recommended = _extract_recommended(answer, chunks, tool_products)
+
+        display = _structured_display_products(
+            chunks, tool_products, settings.chat_display_products_max
+        )
+        if qu.price_preference == "cheapest" and display:
+            display = await _sort_by_price(http_request.app.state.http, display)
+
+        # Persist the updated conversation scope for the next (possibly elliptical) turn.
+        state.categories = qu.categories or state.categories
+        state.intent = qu.intent
+        state.price_preference = qu.price_preference
+        await state_store.save(request.session_id, state)
 
         root.update(output=answer)
         return ChatResponse(
             answer=answer,
             sources=_unique_sources(chunks),
-            products=recommended,
+            products=[str(i) for i in display],  # legacy mirror
             order_draft=order_draft,
+            intent=qu.intent,
+            categories=qu.categories,
+            display_products=display,
+            conversation_state=state,
         )
 
 
@@ -192,6 +214,48 @@ async def _run_tool_loop(
     )
 
 
+def _structured_display_products(
+    chunks: list[Chunk], tool_products: list[dict], cap: int
+) -> list[int]:
+    """The product ids to render as cards, from STRUCTURED sources (not prose):
+    recommend_similar_products results first, then retrieved product chunks, in
+    order, deduped, numeric-only, capped. Replaces the substring scrape."""
+    ordered: list[str] = [p["id"] for p in tool_products if p.get("id")]
+    ordered += [c.source_id for c in chunks if c.doc_type == "product"]
+    out: list[int] = []
+    seen: set[int] = set()
+    for sid in ordered:
+        try:
+            n = int(sid)
+        except (TypeError, ValueError):
+            continue
+        if n > 0 and n not in seen:
+            seen.add(n)
+            out.append(n)
+        if len(out) >= cap:
+            break
+    return out
+
+
+async def _sort_by_price(http_client, ids: list[int]) -> list[int]:
+    """Sort candidate ids ascending by live price (shop-api). On any failure keep
+    the original order — never empty the list because pricing was unavailable."""
+    from app.services.product_client import ProductClient
+
+    client = ProductClient(http_client)
+    priced: list[tuple[float, int]] = []
+    for pid in ids:
+        try:
+            data = await client.get_pricing(pid)
+            variants = data.get("variants") or []
+            prices = [v.get("price") for v in variants if v.get("price") is not None]
+            priced.append((min(prices) if prices else float("inf"), pid))
+        except Exception:  # noqa: BLE001 — degrade gracefully
+            priced.append((float("inf"), pid))
+    priced.sort(key=lambda t: t[0])
+    return [pid for _, pid in priced]
+
+
 def _unique_sources(chunks: list[Chunk]) -> list[SourceRef]:
     seen: set[tuple[str, str]] = set()
     out: list[SourceRef] = []
@@ -215,31 +279,6 @@ def _chunk_product_name(c: Chunk) -> str:
     first_line = c.content.split("\n", 1)[0]
     prefix = "Sản phẩm:"
     return first_line[len(prefix) :].strip() if first_line.startswith(prefix) else ""
-
-
-_NAME_PREFIXES = (
-    "vợt cầu lông ",
-    "giày cầu lông ",
-    "áo cầu lông ",
-    "quần cầu lông ",
-    "balo cầu lông ",
-    "túi cầu lông ",
-    "set vợt cầu lông ",
-)
-
-
-def _name_core(name: str) -> str:
-    """Distinctive core of a product name: drop the category prefix and the
-    'chính hãng' suffix so a shortened mention in the answer still matches."""
-    s = name.strip().lower()
-    for p in _NAME_PREFIXES:
-        if s.startswith(p):
-            s = s[len(p) :]
-            break
-    for suf in (" chính hãng", " chinh hang"):
-        if s.endswith(suf):
-            s = s[: -len(suf)]
-    return s.strip()
 
 
 def _collect_tool_products(result: str, out: list[dict]) -> None:
@@ -267,7 +306,7 @@ def _parse_order_draft(result: str) -> dict | None:
     """Parse a prepare_order tool result into an order_draft dict, or None.
 
     Centralized {"error": ...} payloads and non-JSON strings yield no draft
-    (present-or-absent, not inferred from prose like _extract_recommended).
+    (present-or-absent, not inferred from prose).
     """
     try:
         data = json.loads(result)
@@ -276,37 +315,6 @@ def _parse_order_draft(result: str) -> dict | None:
     if not isinstance(data, dict) or "items" not in data or "error" in data:
         return None
     return data
-
-
-def _extract_recommended(
-    answer: str, chunks: list[Chunk], tool_products: list[dict]
-) -> tuple[str, list[str]]:
-    """Product ids the answer recommends, matched by name against the products
-    it could know about — retrieved chunks + recommend_similar_products results
-    — ordered by first mention. Keeps chatbot cards consistent with the text.
-    """
-    # Build core-name -> id (retrieval first so it wins ties, then tool results)
-    core_to_id: dict[str, str] = {}
-    for c in chunks:
-        if c.doc_type == "product":
-            nm = _chunk_product_name(c)
-            if nm:
-                core_to_id.setdefault(_name_core(nm), c.source_id)
-    for p in tool_products:
-        nm = p.get("name")
-        if nm:
-            core_to_id.setdefault(_name_core(nm), p["id"])
-
-    low = answer.lower()
-    hits: list[tuple[int, str]] = []
-    seen: set[str] = set()
-    for core, pid in core_to_id.items():
-        pos = low.find(core) if core else -1
-        if pos >= 0 and pid not in seen:
-            seen.add(pid)
-            hits.append((pos, pid))
-    hits.sort()
-    return answer, [pid for _, pid in hits]
 
 
 def _extract_product_catalog(chunks: list[Chunk]) -> list[tuple[str, str]]:

@@ -1,7 +1,49 @@
 import json
 from unittest.mock import AsyncMock
 
-from app.routers.chat import _parse_order_draft, _run_tool_loop
+from app.routers.chat import (
+    _parse_order_draft,
+    _run_tool_loop,
+    _structured_display_products,
+)
+from app.services.retrieval import Chunk
+
+
+def _chunk(sid, cat="Quần cầu lông"):
+    return Chunk(
+        doc_type="product",
+        source_id=sid,
+        chunk_index=0,
+        content=f"Sản phẩm: P{sid}",
+        distance=0.1,
+    )
+
+
+def test_structured_display_products_from_chunks_capped_deduped():
+    chunks = [
+        _chunk("101"),
+        _chunk("101"),
+        _chunk("102"),
+        _chunk("103"),
+        _chunk("104"),
+        _chunk("105"),
+    ]
+    ids = _structured_display_products(chunks, tool_products=[], cap=4)
+    assert ids == [101, 102, 103, 104]  # retrieval order, deduped, capped, ints
+
+
+def test_structured_display_products_prefers_tool_products():
+    chunks = [_chunk("101")]
+    tool_products = [{"id": "201", "name": "X"}, {"id": "202", "name": "Y"}]
+    ids = _structured_display_products(chunks, tool_products=tool_products, cap=4)
+    assert ids[:2] == [201, 202]  # recommend_similar_products results lead
+
+
+def test_structured_display_products_ignores_non_numeric():
+    ids = _structured_display_products(
+        [_chunk("abc"), _chunk("102")], tool_products=[], cap=4
+    )
+    assert ids == [102]
 
 
 def test_parse_order_draft_valid_dict():

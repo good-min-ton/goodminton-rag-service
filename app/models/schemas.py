@@ -2,6 +2,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.services.conversation_state import ConversationState
+
 
 class ChatMessage(BaseModel):
     role: Literal["user", "assistant"]
@@ -41,10 +43,15 @@ class OrderDraft(BaseModel):
 class ChatResponse(BaseModel):
     answer: str
     sources: list[SourceRef]
-    # product_ids the answer actually recommends (from the <<products: ...>>
-    # marker), in recommendation order — drives the chatbot product cards.
+    # Legacy prose-scraped ids; kept for back-compat. Cards now use display_products.
     products: list[str] = Field(default_factory=list)
     order_draft: OrderDraft | None = None
+    # Foundation additions:
+    intent: str | None = None
+    categories: list[str] = Field(default_factory=list)
+    # The ONLY ids the frontend renders as cards for this message (structured, not scraped).
+    display_products: list[int] = Field(default_factory=list)
+    conversation_state: ConversationState = Field(default_factory=ConversationState)
 
 
 class HealthResponse(BaseModel):
