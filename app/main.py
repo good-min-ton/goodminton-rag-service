@@ -54,6 +54,10 @@ async def lifespan(app: FastAPI):
     app.state.embedding = embedding
     app.state.retrieval = RetrievalService(pool)
     app.state.llm = LLMService(http_client)
+
+    from app.services.query_understanding import QueryUnderstandingService
+
+    app.state.query_understanding = QueryUnderstandingService(app.state.llm)
     app.state.indexer = indexer
     app.state.consumer = consumer
     app.state.tool_dispatcher = tool_dispatcher
