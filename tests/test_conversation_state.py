@@ -21,7 +21,9 @@ class _FakeRedis:
 
 async def test_save_then_load_roundtrips_state():
     store = ConversationStateStore(_FakeRedis())
-    state = ConversationState(intent="buy", categories=["pants"], price_preference="cheapest")
+    state = ConversationState(
+        intent="buy", categories=["pants"], price_preference="cheapest"
+    )
     await store.save("sess-1", state)
     loaded = await store.load("sess-1")
     assert loaded.categories == ["pants"]
@@ -43,7 +45,9 @@ async def test_none_session_id_returns_fresh_and_save_is_noop():
 
 async def test_no_client_degrades_to_stateless():
     store = ConversationStateStore(None)
-    await store.save("sess-1", ConversationState(categories=["pants"]))  # no-op, no raise
+    await store.save(
+        "sess-1", ConversationState(categories=["pants"])
+    )  # no-op, no raise
     assert await store.load("sess-1") == ConversationState()
 
 
