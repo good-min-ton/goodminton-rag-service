@@ -43,14 +43,22 @@ precedence (evaluated top to bottom):
 
 1. **New browse wins:** `qu.categories` is non-empty AND `current != BROWSING` → **BROWSING**
    (the user named a product category → they moved on; reset order context incl. `selected_product_id`).
-2. **Placement signal:** `order_placed_id is not None` → **ORDER_CONFIRMED**.
-3. **Draft emitted this turn:** `order_draft_emitted` → **WAITING_CONFIRMATION**.
+2. **Draft emitted this turn:** `order_draft_emitted` → **WAITING_CONFIRMATION**
+   (a fresh draft is strong evidence of an active order — it outranks a resent stale placement signal).
+3. **Placement signal:** `order_placed_id is not None` → **ORDER_CONFIRMED**.
 4. Otherwise → keep `current` (default BROWSING).
 
 Rationale for precedence: rule 1 lets a resent stale `order_placed_id` (see §4) never lock the
-user out of browsing — a new category always drops back to BROWSING. A bare `qu.intent == "buy"`
-with NO category is NOT treated as a new browse (it is usually a confirm like "mua luôn" / "đồng ý"),
-so it does not force BROWSING.
+user out of browsing — a new category always drops back to BROWSING. Rule 2 above rule 3 means
+starting a new order after a prior placement re-enters WAITING rather than being pinned to
+ORDER_CONFIRMED by the stale signal. A bare `qu.intent == "buy"` with NO category is NOT treated
+as a new browse (it is usually a confirm like "mua luôn" / "đồng ý"), so it does not force BROWSING.
+
+Because `order_draft_emitted` is only known after the tool loop, the handler evaluates the
+transition twice: once BEFORE the loop with `order_draft_emitted=False` to pick the prompt
+directive (this reflects the state carried in from the prior turn — e.g. still WAITING while the
+customer changes a size), and once AFTER the loop with the real `order_draft_emitted` to compute
+the status persisted + the `display_products` gate.
 
 `selected_product_id` is set from the first item of `order_draft` when a draft is emitted, and
 cleared when transitioning to BROWSING via rule 1.
