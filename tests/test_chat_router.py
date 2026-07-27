@@ -2,6 +2,7 @@ import json
 from unittest.mock import AsyncMock
 
 from app.routers.chat import (
+    SANITIZE_FALLBACK,
     _parse_order_draft,
     _run_tool_loop,
     _structured_display_products,
@@ -204,3 +205,43 @@ async def test_run_tool_loop_repeated_calls_force_final_without_draft():
     assert (
         llm.chat_with_tools.await_count == 4
     )  # 1 fresh + 3 cache-hit repeats -> forced final at MAX_REPEATED_CALLS=3
+
+
+async def test_tool_loop_recovers_tool_call_from_content():
+    # Turn 1: model emits a get_pricing call as JSON *content* (tool_calls empty).
+    # Turn 2: model gives a natural-language answer. The loop must recover+execute
+    # the call and return the clean answer — never the raw JSON.
+    llm = AsyncMock()
+    llm.chat_with_tools.side_effect = [
+        {
+            "role": "assistant",
+            "content": '{"name": "get_pricing", "arguments": {"product_id": 12}}',
+            "tool_calls": [],
+        },
+        {
+            "role": "assistant",
+            "content": "Vợt Astrox 12 giá 1.200.000đ ạ.",
+            "tool_calls": [],
+        },
+    ]
+    dispatcher = _Dispatcher(
+        {"get_pricing": json.dumps({"productId": 12, "variants": []})}
+    )
+    answer, _, _ = await _run_tool_loop(llm, dispatcher, [])
+    assert answer == "Vợt Astrox 12 giá 1.200.000đ ạ."
+    assert dispatcher.calls == ["get_pricing"]  # recovered call was executed
+    assert "{" not in answer
+
+
+async def test_tool_loop_sanitizes_unrecoverable_json_content():
+    # Model emits bare args (no tool name) as content and no tool_calls -> not
+    # recoverable -> the answer is sanitized to the fallback, not the raw JSON.
+    llm = AsyncMock()
+    llm.chat_with_tools.return_value = {
+        "role": "assistant",
+        "content": '{"product_id": 164, "size": "M", "quantity": 1}',
+        "tool_calls": [],
+    }
+    dispatcher = _Dispatcher({})
+    answer, _, _ = await _run_tool_loop(llm, dispatcher, [])
+    assert answer == SANITIZE_FALLBACK

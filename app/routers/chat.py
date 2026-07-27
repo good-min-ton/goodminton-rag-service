@@ -233,7 +233,14 @@ async def _run_tool_loop(
         )
 
         if not tool_calls:
-            return msg.get("content") or "", tool_products, order_draft
+            content = msg.get("content") or ""
+            recovered = _recover_tool_call(content, _TOOL_NAMES)
+            if recovered is None:
+                return _sanitize_answer(content), tool_products, order_draft
+            # 3B emitted the call as text — honor it: synthesize a structured call
+            # and fall through to the normal execution block below.
+            tool_calls = [{"function": recovered}]
+            msg = {"role": "assistant", "content": "", "tool_calls": tool_calls}
 
         messages.append(msg)
 
@@ -284,7 +291,7 @@ async def _run_tool_loop(
             ) as gen:
                 final = await llm.chat(messages)
                 gen.update(output=final)
-            return final, tool_products, order_draft
+            return _sanitize_answer(final), tool_products, order_draft
 
     log.warning("Tool loop hit max iterations (%d)", MAX_TOOL_ITERATIONS)
     return (
