@@ -77,9 +77,12 @@ unbounded path.
 - `_recover_tool_call`: `{"name":"get_pricing","arguments":{"product_id":12}}` → dict; nested
   `{"function":{...}}` form → dict; unknown tool name → None; bare `{"product_id":164,"size":"M"}`
   (no name) → None; non-JSON prose → None.
-- `_sanitize_answer`: a pure-JSON answer → `SANITIZE_FALLBACK`; a ```` ```json {...} ``` ```` fence
-  → stripped/fallback; normal prose "Quần Lining 9215 giá 130.000đ..." → unchanged; prose followed
-  by a trailing JSON blob → JSON removed, prose kept.
+- `_sanitize_answer`: a pure-JSON answer (starts with `{`, parses) → `SANITIZE_FALLBACK`; a
+  ```` ```json {...} ``` ```` fence with no surrounding prose → `SANITIZE_FALLBACK`; a fence WITH
+  surrounding prose → fence removed, prose kept; normal prose "Quần Lining 9215 giá 130.000đ..."
+  (does not start with `{`/fence) → unchanged. (Conservative: only answers that START with `{` or
+  a code fence are touched — prose with an embedded blob is left alone, since stripping mid-prose
+  risks damaging a legitimate reply; the recovery layer + anti-echo prompt cover that rarer case.)
 - `_run_tool_loop` (mock LLM + stub dispatcher, following `tests/test_chat_router.py` patterns):
   (a) LLM returns content-JSON naming `get_pricing` with empty `tool_calls` → the loop recovers +
   executes it, then a later text turn yields a clean natural-language answer (no JSON leaked);
