@@ -14,6 +14,10 @@ class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=2000)
     chat_history: list[ChatMessage] = Field(default_factory=list, max_length=20)
     session_id: str | None = None
+    # Set by the frontend on the turn(s) after it places an order, so the backend
+    # can advance the order state machine to ORDER_CONFIRMED. Backend never places
+    # an order — this is a read-only signal.
+    order_placed_id: int | None = None
 
 
 class SourceRef(BaseModel):

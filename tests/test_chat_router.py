@@ -6,7 +6,23 @@ from app.routers.chat import (
     _run_tool_loop,
     _structured_display_products,
 )
+from app.services.order_flow import (
+    BROWSING,
+    ORDER_CONFIRMED,
+    WAITING_CONFIRMATION,
+    suppresses_recommendations,
+)
 from app.services.retrieval import Chunk
+
+
+def test_display_blanked_when_order_pending():
+    display = [1, 2, 3]
+    gated = [] if suppresses_recommendations(WAITING_CONFIRMATION) else display
+    assert gated == []
+    gated2 = [] if suppresses_recommendations(ORDER_CONFIRMED) else display
+    assert gated2 == []
+    gated3 = [] if suppresses_recommendations(BROWSING) else display
+    assert gated3 == [1, 2, 3]
 
 
 def _chunk(sid, cat="Quần cầu lông"):

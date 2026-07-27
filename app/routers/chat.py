@@ -12,6 +12,12 @@ from app.core.tracing import langfuse
 from app.models.schemas import ChatRequest, ChatResponse, SourceRef
 from app.services.embedding import EmbeddingService
 from app.services.llm import LLMService
+from app.services.order_flow import (
+    BROWSING,
+    next_order_status,
+    order_directive,
+    suppresses_recommendations,
+)
 from app.services.retrieval import Chunk, RetrievalService
 from app.services.tools import TOOL_SCHEMAS, ToolDispatcher
 
@@ -44,6 +50,12 @@ async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
     ):
         state = await state_store.load(request.session_id)
         qu = await qu_svc.analyze(query, state)
+        incoming_status = next_order_status(
+            state.order_status,
+            qu,
+            order_draft_emitted=False,
+            order_placed_id=request.order_placed_id,
+        )
 
         with langfuse.start_as_current_observation(
             name="embed",
@@ -85,6 +97,8 @@ async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
                 "sản phẩm phù hợp."
             )
 
+        system_content += order_directive(incoming_status)
+
         messages: list[dict] = [{"role": "system", "content": system_content}]
         for m in request.chat_history:
             messages.append({"role": m.role, "content": m.content})
@@ -94,16 +108,35 @@ async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
             llm_svc, tool_dispatcher, messages
         )
 
+        order_draft_emitted = order_draft is not None
+        final_status = next_order_status(
+            incoming_status, qu, order_draft_emitted, request.order_placed_id
+        )
+
         display = _structured_display_products(
             chunks, tool_products, settings.chat_display_products_max
         )
-        if qu.price_preference == "cheapest" and display:
+        if suppresses_recommendations(final_status):
+            display = []  # no new-product cards while an order is pending/placed
+        elif qu.price_preference == "cheapest" and display:
             display = await _sort_by_price(http_request.app.state.http, display)
 
-        # Persist the updated conversation scope for the next (possibly elliptical) turn.
+        # Remember the product under order; clear it when the user moves on to browsing.
+        if order_draft_emitted:
+            items = order_draft.get("items") or []
+            if items:
+                try:
+                    state.selected_product_id = int(items[0]["product_id"])
+                except (KeyError, ValueError, TypeError):
+                    pass
+        if final_status == BROWSING:
+            state.selected_product_id = None
+
+        # Persist scope + order status for the next turn.
         state.categories = qu.categories or state.categories
         state.intent = qu.intent
         state.price_preference = qu.price_preference
+        state.order_status = final_status
         await state_store.save(request.session_id, state)
 
         root.update(output=answer)
