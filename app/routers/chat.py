@@ -167,7 +167,7 @@ async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
         display = _structured_display_products(
             chunks, tool_products, settings.chat_display_products_max
         )
-        if suppresses_recommendations(final_status):
+        if suppresses_recommendations(final_status) or not qu.product_query:
             display = []  # no new-product cards while an order is pending/placed
         elif qu.price_preference == "cheapest" and display:
             display = await _sort_by_price(http_request.app.state.http, display)

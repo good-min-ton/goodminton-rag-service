@@ -46,3 +46,47 @@ async def test_llm_fallback_unusable_output_yields_no_category():
     llm.chat.return_value = "tôi không rõ"
     qu = await _svc(llm).analyze("asdfqwer", ConversationState())
     assert qu.categories == []  # unfiltered retrieval downstream (current behavior)
+
+
+async def test_product_query_true_for_buy_intent():
+    qu = await _svc().analyze("tôi muốn mua quần cầu lông", ConversationState())
+    assert qu.product_query is True
+
+
+async def test_product_query_true_for_price_preference():
+    qu = await _svc().analyze("loại nào rẻ nhất?", ConversationState())
+    assert qu.product_query is True
+
+
+async def test_product_query_true_for_refine_keyword():
+    qu = await _svc().analyze("cái nào nhẹ hơn?", ConversationState())
+    assert qu.product_query is True
+
+
+async def test_product_query_true_for_category_and_price_intent():
+    qu = await _svc().analyze("vợt astrox giá bao nhiêu", ConversationState())
+    assert qu.product_query is True
+
+
+async def test_product_query_false_for_weather_chitchat():
+    qu = await _svc().analyze("hôm nay trời đẹp nhỉ", ConversationState())
+    assert qu.product_query is False
+
+
+async def test_product_query_false_for_policy_question():
+    qu = await _svc().analyze("chính sách bảo hành thế nào?", ConversationState())
+    assert qu.product_query is False
+
+
+async def test_product_query_false_for_thanks():
+    qu = await _svc().analyze("cảm ơn shop nhé", ConversationState())
+    assert qu.product_query is False
+
+
+async def test_product_query_false_for_offtopic_followup_with_inherited_category():
+    state = ConversationState(categories=["Quần cầu lông"])
+    qu = await _svc().analyze("chính sách bảo hành thế nào?", state)
+    # Categories are still inherited for retrieval scoping...
+    assert qu.categories == ["Quần cầu lông"]
+    # ...but the turn itself is not a product query, so cards must be gated off.
+    assert qu.product_query is False

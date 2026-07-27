@@ -51,12 +51,37 @@ _INTENT_STOCK = [
 ]
 _INTENT_BUY = ["mua", "đặt", "dat ", "order", "chốt", "lấy"]
 
+# Shopping-refinement signals not already covered by category/price/intent keywords.
+_REFINE_KEYWORDS = [
+    "cái nào",
+    "loại nào",
+    "mẫu nào",
+    "mẫu",
+    "màu",
+    "cỡ",
+    "nhẹ",
+    "nặng",
+    "bền",
+    "cứng",
+    "dẻo",
+    "êm",
+    "đắt",
+    "tốt",
+    "xịn",
+    "cao cấp",
+    "phù hợp",
+    "gợi ý",
+    "tư vấn",
+    "sản phẩm",
+]
+
 
 class QueryUnderstanding(BaseModel):
     intent: str | None = None
     categories: list[str] = Field(default_factory=list)
     price_preference: str | None = None
     retrieval_query: str = ""
+    product_query: bool = True
 
 
 class QueryUnderstandingService:
@@ -105,6 +130,12 @@ class QueryUnderstandingService:
         categories = self._rule_categories(low)
         intent = self._rule_intent(low)
         price_pref = "cheapest" if any(k in low for k in _PRICE_CHEAPEST) else None
+        product_query = (
+            bool(self._rule_categories(low))
+            or price_pref is not None
+            or intent in {"price", "stock", "buy"}
+            or any(k in low for k in _REFINE_KEYWORDS)
+        )
 
         if not categories:
             # LLM fallback for category only; if it also fails, inherit from state.
@@ -123,4 +154,5 @@ class QueryUnderstandingService:
             categories=categories,
             price_preference=price_pref,
             retrieval_query=retrieval_query,
+            product_query=product_query,
         )
