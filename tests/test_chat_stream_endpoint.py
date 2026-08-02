@@ -27,5 +27,12 @@ def test_stream_events_cover_all_chat_response_fields():
     # _finalize_chat. (A full ASGITransport value-parity test would need heavy,
     # fragile fakes of every app.state service — deliberately avoided per YAGNI.)
     meta_keys = {"sources", "intent", "categories"}
-    done_keys = {"answer", "order_draft", "display_products", "products", "sources", "conversation_state"}
+    done_keys = {
+        "answer",
+        "order_draft",
+        "display_products",
+        "products",
+        "sources",
+        "conversation_state",
+    }
     assert set(ChatResponse.model_fields) <= (meta_keys | done_keys)

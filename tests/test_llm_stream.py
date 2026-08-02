@@ -34,7 +34,10 @@ async def test_stream_yields_tokens_then_final():
 async def test_stream_surfaces_tool_calls_no_tokens():
     tc = [{"function": {"name": "get_pricing", "arguments": {"product_id": 21}}}]
     lines = [
-        {"message": {"role": "assistant", "content": "", "tool_calls": tc}, "done": False},
+        {
+            "message": {"role": "assistant", "content": "", "tool_calls": tc},
+            "done": False,
+        },
         {"message": {"role": "assistant", "content": ""}, "done": True},
     ]
     async with _client(lines) as c:

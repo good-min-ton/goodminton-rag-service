@@ -137,7 +137,9 @@ async def _stream_turn(turn_stream):
         yield ("result", ("answer", _sanitize_answer(full)))
 
 
-async def _prepare_chat_pipeline(http_request: Request, request: ChatRequest, query: str):
+async def _prepare_chat_pipeline(
+    http_request: Request, request: ChatRequest, query: str
+):
     """Pre-generation pipeline shared by /chat and /chat/stream. Returns
     (messages, chunks, context_chunks, qu, state, just_placed) — `chunks` is the
     wide candidate set (feeds card reranking in _finalize_chat), `context_chunks`
@@ -247,9 +249,7 @@ async def _finalize_chat(
     if suppresses_recommendations(final_status) or not qu.product_query:
         display = []  # no new-product cards while an order is pending/placed
     else:
-        candidates = _card_candidates(
-            chunks, tool_products, settings.card_max_distance
-        )
+        candidates = _card_candidates(chunks, tool_products, settings.card_max_distance)
         with langfuse.start_as_current_observation(
             name="rerank", as_type="span", input=qu.retrieval_query
         ) as rr:
@@ -301,9 +301,14 @@ async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
             name="chat", as_type="span", input=query
         ) as root,
     ):
-        messages, chunks, context_chunks, qu, state, just_placed = (
-            await _prepare_chat_pipeline(http_request, request, query)
-        )
+        (
+            messages,
+            chunks,
+            context_chunks,
+            qu,
+            state,
+            just_placed,
+        ) = await _prepare_chat_pipeline(http_request, request, query)
 
         answer, tool_products, order_draft = await _run_tool_loop(
             llm_svc, tool_dispatcher, messages
@@ -372,15 +377,22 @@ async def chat_stream(request: ChatRequest, http_request: Request):
         # parent (avoids orphaned traces). Per-turn generation/tool spans are omitted
         # for the streaming path (reduced granularity vs /chat).
         with (
-            propagate_attributes(session_id=request.session_id or None, trace_name="chat"),
+            propagate_attributes(
+                session_id=request.session_id or None, trace_name="chat"
+            ),
             langfuse.start_as_current_observation(
                 name="chat", as_type="span", input=query
             ) as root,
         ):
             try:
-                messages, chunks, context_chunks, qu, state, just_placed = (
-                    await _prepare_chat_pipeline(http_request, request, query)
-                )
+                (
+                    messages,
+                    chunks,
+                    context_chunks,
+                    qu,
+                    state,
+                    just_placed,
+                ) = await _prepare_chat_pipeline(http_request, request, query)
                 sources = [s.model_dump() for s in _unique_sources(chunks)]
                 yield _sse(
                     "meta",

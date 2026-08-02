@@ -35,17 +35,21 @@ async def test_leading_whitespace_then_prose_streams():
 
 @pytest.mark.asyncio
 async def test_json_blob_buffered_to_fallback_no_live():
-    live, result = await _drain(['{"a"', ': 1}'])
+    live, result = await _drain(['{"a"', ": 1}"])
     assert live == ""  # never streamed
     assert result == ("answer", SANITIZE_FALLBACK)
 
 
 @pytest.mark.asyncio
 async def test_recovered_tool_call_from_content_emits_no_tokens():
-    live, result = await _drain(['{"name": "get_pricing", "arguments": {"product_id": 12}}'])
+    live, result = await _drain(
+        ['{"name": "get_pricing", "arguments": {"product_id": 12}}']
+    )
     assert live == ""
     assert result[0] == "tool"
-    assert result[1] == [{"function": {"name": "get_pricing", "arguments": {"product_id": 12}}}]
+    assert result[1] == [
+        {"function": {"name": "get_pricing", "arguments": {"product_id": 12}}}
+    ]
 
 
 @pytest.mark.asyncio
