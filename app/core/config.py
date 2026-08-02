@@ -22,8 +22,19 @@ class Settings(BaseSettings):
     llm_model: str = "qwen2.5:14b-instruct-q4_K_M"
 
     # Retrieval
-    retrieval_top_k: int = 5
+    retrieval_top_k: int = 5  # chunks đưa vào ngữ cảnh LLM
     min_query_length: int = 2
+    # Số candidate lấy về trước khi rerank (recall cao hơn top_k).
+    retrieval_candidates: int = 12
+    # Ngưỡng khoảng cách cosine để một product chunk đủ điều kiện làm thẻ gợi ý;
+    # vượt ngưỡng bị coi là quá yếu, không hiển thị. <=0 => tắt lọc.
+    card_max_distance: float = 0.62
+
+    # Rerank các candidate sản phẩm để thẻ gợi ý sát câu hỏi hơn.
+    rerank_enabled: bool = True
+    rerank_mode: str = "llm"  # "llm" (Qwen listwise) | "bge" (service ngoài)
+    rerank_url: str | None = None  # bge-reranker service, dùng khi mode == "bge"
+    rerank_top_n: int = 4
 
     # Chatbot conversation state (Redis) + display cards.
     # redis_url e.g. redis://:pass@redis:6379/0 ; None => stateless degrade.

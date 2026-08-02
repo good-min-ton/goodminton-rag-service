@@ -88,3 +88,9 @@ class DescriptionResponse(BaseModel):
     model: str
     style: str
     length: str
+
+
+class FeedbackRequest(BaseModel):
+    session_id: str | None = None
+    helpful: bool
+    comment: str | None = Field(default=None, max_length=1000)

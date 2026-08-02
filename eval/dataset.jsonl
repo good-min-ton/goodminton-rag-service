@@ -1,0 +1,20 @@
+{"id": "Q01", "question": "Vợt Yonex Astrox 99 Pro giá bao nhiêu?", "type": "product", "expect_name_any": ["Astrox 99 Pro"]}
+{"id": "Q02", "question": "Astrox 99 Play còn hàng không?", "type": "product", "expect_name_any": ["Astrox 99 Play"]}
+{"id": "Q03", "question": "Tôi muốn mua vợt Astrox 100 Tour", "type": "product", "expect_name_any": ["Astrox 100 Tour"]}
+{"id": "Q04", "question": "Có vợt Nanoflare nào không?", "type": "product", "expect_name_any": ["Nanoflare"]}
+{"id": "Q05", "question": "Vợt Arcsaber 7 giá thế nào?", "type": "product", "expect_name_any": ["Arcsaber 7"]}
+{"id": "Q06", "question": "Tư vấn vợt tấn công cho người chơi khỏe tay", "type": "product", "expect_category": "Vợt cầu lông"}
+{"id": "Q07", "question": "Vợt nào nhẹ cho người mới tập chơi cầu lông?", "type": "product", "expect_category": "Vợt cầu lông"}
+{"id": "Q08", "question": "Shop có giày cầu lông không?", "type": "product", "expect_category": "Giày cầu lông"}
+{"id": "Q09", "question": "Tôi cần mua áo cầu lông Lining", "type": "product", "expect_category": "Áo cầu lông", "expect_name_any": ["Lining"]}
+{"id": "Q10", "question": "Quần cầu lông có những mẫu nào?", "type": "product", "expect_category": "Quần cầu lông"}
+{"id": "Q11", "question": "Có bán dây cước căng vợt không?", "type": "product", "expect_category": "Dây cước cầu lông"}
+{"id": "Q12", "question": "Astrox 99 Tour và Astrox 99 Game khác gì nhau?", "type": "product", "expect_name_any": ["Astrox 99 Tour", "Astrox 99 Game"]}
+{"id": "Q13", "question": "Set vợt Lining Bladex 900 gồm những gì?", "type": "product", "expect_name_any": ["Bladex 900"]}
+{"id": "Q14", "question": "Vợt Astrox Lite 37i phù hợp với ai?", "type": "product", "expect_name_any": ["Astrox Lite 37"]}
+{"id": "Q15", "question": "Chính sách bảo hành vợt như thế nào?", "type": "policy"}
+{"id": "Q16", "question": "Shop có cho đổi trả hàng không?", "type": "policy"}
+{"id": "Q17", "question": "Lực căng dây vợt bao nhiêu là hợp lý cho người mới?", "type": "policy"}
+{"id": "Q18", "question": "Cửa hàng ở đâu, mở cửa mấy giờ?", "type": "policy"}
+{"id": "Q19", "question": "Hôm nay thời tiết Hà Nội thế nào?", "type": "out_of_scope"}
+{"id": "Q20", "question": "Cho tôi công thức nấu phở bò", "type": "out_of_scope"}
