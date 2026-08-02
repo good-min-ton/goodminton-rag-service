@@ -1,5 +1,7 @@
 """Ollama chat wrapper. Phase 3: non-streaming, no tool calling."""
 
+import json
+
 import httpx
 
 from app.core.config import settings
@@ -59,3 +61,37 @@ class LLMService:
         )
         r.raise_for_status()
         return r.json()["message"]
+
+    async def chat_with_tools_stream(self, messages: list[dict], tools: list[dict]):
+        """Stream a tool-enabled chat turn. Async-generator: yields ("token", delta)
+        per content delta, then exactly one ("final", message-dict) carrying the
+        turn's tool_calls (list or None). Mirrors chat_with_tools() but stream=True;
+        chat()/chat_with_tools() are untouched (other callers rely on their returns)."""
+        body = {
+            "model": settings.llm_model,
+            "messages": messages,
+            "tools": tools,
+            "stream": True,
+            "options": {"temperature": settings.llm_temperature},
+        }
+        tool_calls: list | None = None
+        async with self._client.stream(
+            "POST",
+            f"{settings.ollama_url}/api/chat",
+            json=body,
+            timeout=settings.llm_timeout_seconds,
+        ) as r:
+            r.raise_for_status()
+            async for line in r.aiter_lines():
+                if not line.strip():
+                    continue
+                data = json.loads(line)
+                msg = data.get("message") or {}
+                if msg.get("tool_calls"):
+                    tool_calls = msg["tool_calls"]
+                content = msg.get("content") or ""
+                if content:
+                    yield ("token", content)
+                if data.get("done"):
+                    break
+        yield ("final", {"role": "assistant", "content": "", "tool_calls": tool_calls})
