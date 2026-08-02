@@ -7,6 +7,7 @@ import time
 from collections import defaultdict, deque
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from langfuse import propagate_attributes
 
 from app.core.config import settings
@@ -136,7 +137,203 @@ async def _stream_turn(turn_stream):
         yield ("result", ("answer", _sanitize_answer(full)))
 
 
-# --- SSE streaming plumbing (flag-gated; wired to a route in a later commit) ---
+async def _prepare_chat_pipeline(http_request: Request, request: ChatRequest, query: str):
+    """Pre-generation pipeline shared by /chat and /chat/stream. Returns
+    (messages, chunks, context_chunks, qu, state, just_placed) — `chunks` is the
+    wide candidate set (feeds card reranking in _finalize_chat), `context_chunks`
+    is the top-k slice fed to the LLM. Pure extract-method from chat() — no logic
+    change."""
+    embedding_svc: EmbeddingService = http_request.app.state.embedding
+    retrieval_svc: RetrievalService = http_request.app.state.retrieval
+    state_store = http_request.app.state.conversation_state
+    qu_svc = http_request.app.state.query_understanding
+
+    state = await state_store.load(request.session_id)
+    qu = await qu_svc.analyze(query, state)
+    just_placed = (
+        request.order_placed_id is not None
+        and request.order_placed_id != state.last_confirmed_order_id
+    )
+    incoming_status = next_order_status(
+        state.order_status,
+        qu,
+        order_draft_emitted=False,
+        order_just_placed=just_placed,
+    )
+
+    with langfuse.start_as_current_observation(
+        name="embed",
+        as_type="embedding",
+        input=qu.retrieval_query,
+        model=settings.embedding_model,
+    ):
+        query_vec = await embedding_svc.embed(qu.retrieval_query)
+
+    with langfuse.start_as_current_observation(
+        name="retrieval", as_type="retriever", input=qu.retrieval_query
+    ) as rspan:
+        chunks = await retrieval_svc.search(
+            query_vec,
+            k=settings.retrieval_candidates,
+            categories=qu.categories or None,
+        )
+        rspan.update(
+            output=[
+                {
+                    "doc_type": c.doc_type,
+                    "source_id": c.source_id,
+                    "distance": round(c.distance, 4),
+                }
+                for c in chunks
+            ]
+        )
+
+    # Top-k nearest go into the LLM context; the wider candidate set feeds
+    # the reranker for card selection.
+    context_chunks = chunks[: settings.retrieval_top_k]
+    context = _format_context(context_chunks)
+    catalog = _extract_product_catalog(context_chunks)
+
+    system_content = SYSTEM_PROMPT.format(context=context)
+    if catalog:
+        listing = "\n".join(
+            f"- {pid}: {name}" if name else f"- {pid}" for pid, name in catalog
+        )
+        system_content += (
+            "\n\nDanh sách sản phẩm hợp lệ để gọi tool. Chọn ĐÚNG product_id ứng "
+            "với TÊN sản phẩm khách hỏi; KHÔNG nhắc ID trong câu trả lời, KHÔNG "
+            "dùng ID ngoài danh sách này:\n" + listing
+        )
+    else:
+        system_content += (
+            "\n\nNgữ cảnh không chứa sản phẩm nào. KHÔNG gọi tool với ID tự nghĩ "
+            "ra; nếu khách hỏi giá hoặc tồn kho, trả lời rằng bạn không tìm thấy "
+            "sản phẩm phù hợp."
+        )
+
+    system_content += order_directive(incoming_status)
+
+    messages: list[dict] = [{"role": "system", "content": system_content}]
+    for m in request.chat_history:
+        messages.append({"role": m.role, "content": m.content})
+    messages.append({"role": "user", "content": query})
+
+    return messages, chunks, context_chunks, qu, state, just_placed
+
+
+async def _finalize_chat(
+    http_request: Request,
+    request: ChatRequest,
+    *,
+    qu,
+    state,
+    chunks: list[Chunk],
+    just_placed: bool,
+    tool_products: list[dict],
+    order_draft: dict | None,
+) -> list[int]:
+    """Post-answer finalize shared by /chat and /chat/stream: the team's card-rerank
+    path (recommend_similar_products + retrieved product chunks -> _card_candidates
+    -> rerank_svc.rerank), then state mutations + persistence. Returns the display
+    ids. Pure extract-method from chat() — no logic change."""
+    state_store = http_request.app.state.conversation_state
+    rerank_svc = http_request.app.state.rerank
+
+    order_draft_emitted = order_draft is not None
+    final_status = next_order_status(
+        state.order_status, qu, order_draft_emitted, order_just_placed=just_placed
+    )
+
+    if suppresses_recommendations(final_status) or not qu.product_query:
+        display = []  # no new-product cards while an order is pending/placed
+    else:
+        candidates = _card_candidates(
+            chunks, tool_products, settings.card_max_distance
+        )
+        with langfuse.start_as_current_observation(
+            name="rerank", as_type="span", input=qu.retrieval_query
+        ) as rr:
+            ranked = await rerank_svc.rerank(
+                qu.retrieval_query,
+                candidates,
+                settings.chat_display_products_max,
+            )
+            rr.update(output=ranked)
+        display = [int(i) for i in ranked if str(i).isdigit()]
+        if qu.price_preference == "cheapest" and display:
+            display = await _sort_by_price(http_request.app.state.http, display)
+
+    # Remember the product under order; clear it when the user moves on to browsing.
+    if order_draft_emitted:
+        items = order_draft.get("items") or []
+        if items:
+            try:
+                state.selected_product_id = int(items[0]["product_id"])
+            except (KeyError, ValueError, TypeError):
+                pass
+    if final_status == BROWSING:
+        state.selected_product_id = None
+
+    # Persist scope + order status for the next turn.
+    state.categories = qu.categories or state.categories
+    state.intent = qu.intent
+    state.price_preference = qu.price_preference
+    if just_placed:
+        state.last_confirmed_order_id = request.order_placed_id
+    state.order_status = final_status
+    await state_store.save(request.session_id, state)
+
+    return display
+
+
+@router.post("")
+async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
+    llm_svc: LLMService = http_request.app.state.llm
+    tool_dispatcher: ToolDispatcher = http_request.app.state.tool_dispatcher
+
+    query = request.message.strip()
+    if len(query) < settings.min_query_length:
+        raise HTTPException(status_code=400, detail="Câu hỏi quá ngắn")
+
+    with (
+        propagate_attributes(session_id=request.session_id or None, trace_name="chat"),
+        langfuse.start_as_current_observation(
+            name="chat", as_type="span", input=query
+        ) as root,
+    ):
+        messages, chunks, context_chunks, qu, state, just_placed = (
+            await _prepare_chat_pipeline(http_request, request, query)
+        )
+
+        answer, tool_products, order_draft = await _run_tool_loop(
+            llm_svc, tool_dispatcher, messages
+        )
+
+        display = await _finalize_chat(
+            http_request,
+            request,
+            qu=qu,
+            state=state,
+            chunks=chunks,
+            just_placed=just_placed,
+            tool_products=tool_products,
+            order_draft=order_draft,
+        )
+
+        root.update(output=answer)
+        return ChatResponse(
+            answer=answer,
+            sources=_unique_sources(chunks),
+            products=[str(i) for i in display],  # legacy mirror
+            order_draft=order_draft,
+            intent=qu.intent,
+            categories=qu.categories,
+            display_products=display,
+            conversation_state=state,
+        )
+
+
+# --- SSE streaming (flag-gated; /chat above is unchanged) ---
 _STREAM_RATE_HITS: dict[str, deque] = defaultdict(deque)
 
 
@@ -155,155 +352,81 @@ def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-@router.post("")
-async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
-    embedding_svc: EmbeddingService = http_request.app.state.embedding
-    retrieval_svc: RetrievalService = http_request.app.state.retrieval
-    llm_svc: LLMService = http_request.app.state.llm
-    tool_dispatcher: ToolDispatcher = http_request.app.state.tool_dispatcher
-    state_store = http_request.app.state.conversation_state
-    qu_svc = http_request.app.state.query_understanding
-    rerank_svc = http_request.app.state.rerank
-
+@router.post("/stream")
+async def chat_stream(request: ChatRequest, http_request: Request):
+    # Backend flag-gate: OFF => route does not exist (not merely un-called by UI).
+    if not settings.chat_stream_enabled:
+        raise HTTPException(status_code=404, detail="Not found")
+    ip = http_request.client.host if http_request.client else "unknown"
+    if _chat_rate_limited(ip):
+        raise HTTPException(status_code=429, detail="Quá nhiều yêu cầu, thử lại sau")
     query = request.message.strip()
     if len(query) < settings.min_query_length:
         raise HTTPException(status_code=400, detail="Câu hỏi quá ngắn")
 
-    with (
-        propagate_attributes(session_id=request.session_id or None, trace_name="chat"),
-        langfuse.start_as_current_observation(
-            name="chat", as_type="span", input=query
-        ) as root,
-    ):
-        state = await state_store.load(request.session_id)
-        qu = await qu_svc.analyze(query, state)
-        just_placed = (
-            request.order_placed_id is not None
-            and request.order_placed_id != state.last_confirmed_order_id
-        )
-        incoming_status = next_order_status(
-            state.order_status,
-            qu,
-            order_draft_emitted=False,
-            order_just_placed=just_placed,
-        )
+    llm_svc: LLMService = http_request.app.state.llm
+    tool_dispatcher: ToolDispatcher = http_request.app.state.tool_dispatcher
 
-        with langfuse.start_as_current_observation(
-            name="embed",
-            as_type="embedding",
-            input=qu.retrieval_query,
-            model=settings.embedding_model,
+    async def event_stream():
+        # Root span so embed/retrieval observations in _prepare_chat_pipeline have a
+        # parent (avoids orphaned traces). Per-turn generation/tool spans are omitted
+        # for the streaming path (reduced granularity vs /chat).
+        with (
+            propagate_attributes(session_id=request.session_id or None, trace_name="chat"),
+            langfuse.start_as_current_observation(
+                name="chat", as_type="span", input=query
+            ) as root,
         ):
-            query_vec = await embedding_svc.embed(qu.retrieval_query)
-
-        with langfuse.start_as_current_observation(
-            name="retrieval", as_type="retriever", input=qu.retrieval_query
-        ) as rspan:
-            chunks = await retrieval_svc.search(
-                query_vec,
-                k=settings.retrieval_candidates,
-                categories=qu.categories or None,
-            )
-            rspan.update(
-                output=[
-                    {
-                        "doc_type": c.doc_type,
-                        "source_id": c.source_id,
-                        "distance": round(c.distance, 4),
-                    }
-                    for c in chunks
-                ]
-            )
-
-        # Top-k nearest go into the LLM context; the wider candidate set feeds
-        # the reranker for card selection.
-        context_chunks = chunks[: settings.retrieval_top_k]
-        context = _format_context(context_chunks)
-        catalog = _extract_product_catalog(context_chunks)
-
-        system_content = SYSTEM_PROMPT.format(context=context)
-        if catalog:
-            listing = "\n".join(
-                f"- {pid}: {name}" if name else f"- {pid}" for pid, name in catalog
-            )
-            system_content += (
-                "\n\nDanh sách sản phẩm hợp lệ để gọi tool. Chọn ĐÚNG product_id ứng "
-                "với TÊN sản phẩm khách hỏi; KHÔNG nhắc ID trong câu trả lời, KHÔNG "
-                "dùng ID ngoài danh sách này:\n" + listing
-            )
-        else:
-            system_content += (
-                "\n\nNgữ cảnh không chứa sản phẩm nào. KHÔNG gọi tool với ID tự nghĩ "
-                "ra; nếu khách hỏi giá hoặc tồn kho, trả lời rằng bạn không tìm thấy "
-                "sản phẩm phù hợp."
-            )
-
-        system_content += order_directive(incoming_status)
-
-        messages: list[dict] = [{"role": "system", "content": system_content}]
-        for m in request.chat_history:
-            messages.append({"role": m.role, "content": m.content})
-        messages.append({"role": "user", "content": query})
-
-        answer, tool_products, order_draft = await _run_tool_loop(
-            llm_svc, tool_dispatcher, messages
-        )
-
-        order_draft_emitted = order_draft is not None
-        final_status = next_order_status(
-            state.order_status, qu, order_draft_emitted, order_just_placed=just_placed
-        )
-
-        if suppresses_recommendations(final_status) or not qu.product_query:
-            display = []  # no new-product cards while an order is pending/placed
-        else:
-            candidates = _card_candidates(
-                chunks, tool_products, settings.card_max_distance
-            )
-            with langfuse.start_as_current_observation(
-                name="rerank", as_type="span", input=qu.retrieval_query
-            ) as rr:
-                ranked = await rerank_svc.rerank(
-                    qu.retrieval_query,
-                    candidates,
-                    settings.chat_display_products_max,
+            try:
+                messages, chunks, context_chunks, qu, state, just_placed = (
+                    await _prepare_chat_pipeline(http_request, request, query)
                 )
-                rr.update(output=ranked)
-            display = [int(i) for i in ranked if str(i).isdigit()]
-            if qu.price_preference == "cheapest" and display:
-                display = await _sort_by_price(http_request.app.state.http, display)
+                sources = [s.model_dump() for s in _unique_sources(chunks)]
+                yield _sse(
+                    "meta",
+                    {
+                        "sources": sources,
+                        "intent": qu.intent,
+                        "categories": qu.categories,
+                    },
+                )
+                answer, tool_products, order_draft = "", [], None
+                async for kind, val in _run_tool_loop_stream(
+                    llm_svc, tool_dispatcher, messages
+                ):
+                    if kind == "token":
+                        yield _sse("token", {"delta": val})
+                    elif kind == "heartbeat":
+                        yield ":\n\n"  # SSE comment — resets the client idle-timer during silent tool turns
+                    else:  # final
+                        answer, tool_products, order_draft = val
+                display = await _finalize_chat(
+                    http_request,
+                    request,
+                    qu=qu,
+                    state=state,
+                    chunks=chunks,
+                    just_placed=just_placed,
+                    tool_products=tool_products,
+                    order_draft=order_draft,
+                )
+                root.update(output=answer)
+                yield _sse(
+                    "done",
+                    {
+                        "answer": answer,
+                        "order_draft": order_draft,
+                        "display_products": display,
+                        "products": [str(i) for i in display],
+                        "sources": sources,
+                        "conversation_state": state.model_dump(),
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001 — never crash the stream
+                log.warning("chat stream failed: %s", exc)
+                yield _sse("error", {"detail": "stream failed"})
 
-        # Remember the product under order; clear it when the user moves on to browsing.
-        if order_draft_emitted:
-            items = order_draft.get("items") or []
-            if items:
-                try:
-                    state.selected_product_id = int(items[0]["product_id"])
-                except (KeyError, ValueError, TypeError):
-                    pass
-        if final_status == BROWSING:
-            state.selected_product_id = None
-
-        # Persist scope + order status for the next turn.
-        state.categories = qu.categories or state.categories
-        state.intent = qu.intent
-        state.price_preference = qu.price_preference
-        if just_placed:
-            state.last_confirmed_order_id = request.order_placed_id
-        state.order_status = final_status
-        await state_store.save(request.session_id, state)
-
-        root.update(output=answer)
-        return ChatResponse(
-            answer=answer,
-            sources=_unique_sources(chunks),
-            products=[str(i) for i in display],  # legacy mirror
-            order_draft=order_draft,
-            intent=qu.intent,
-            categories=qu.categories,
-            display_products=display,
-            conversation_state=state,
-        )
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 async def _run_tool_loop(
