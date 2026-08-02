@@ -42,6 +42,11 @@ class Settings(BaseSettings):
     chat_state_ttl_seconds: int = 3600
     chat_display_products_max: int = 4
 
+    # Chat streaming (SSE) — flag-gated; OFF = /chat unchanged
+    chat_stream_enabled: bool = False
+    chat_rate_window_seconds: int = 60
+    chat_rate_max: int = 30
+
     # Similar Products
     similar_products_top_k: int = 5
     similar_products_max_limit: int = 50
