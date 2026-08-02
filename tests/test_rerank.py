@@ -105,7 +105,9 @@ def test_rerank_mode_defaults_to_bge():
 async def test_rerank_bge_orders_by_scores_and_falls_back_to_embed_url(monkeypatch):
     monkeypatch.setattr(settings, "rerank_enabled", True)
     monkeypatch.setattr(settings, "rerank_mode", "bge")
-    monkeypatch.setattr(settings, "rerank_url", None)  # -> fall back to embed_service_url
+    monkeypatch.setattr(
+        settings, "rerank_url", None
+    )  # -> fall back to embed_service_url
     monkeypatch.setattr(settings, "embed_service_url", "http://embed:8003")
     http = _FakeHTTP([0.1, 0.9, 0.5])  # cand 1/2/3 -> ranked by score desc: 2,3,1
     svc = RerankService(None, http)

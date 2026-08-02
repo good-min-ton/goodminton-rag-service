@@ -32,7 +32,9 @@ class Settings(BaseSettings):
 
     # Rerank các candidate sản phẩm để thẻ gợi ý sát câu hỏi hơn.
     rerank_enabled: bool = True
-    rerank_mode: str = "bge"  # "bge" (cross-encoder service, mặc định) | "llm" (Qwen listwise)
+    rerank_mode: str = (
+        "bge"  # "bge" (cross-encoder service, mặc định) | "llm" (Qwen listwise)
+    )
     rerank_url: str | None = None  # bge-reranker service, dùng khi mode == "bge"
     rerank_top_n: int = 4
 
