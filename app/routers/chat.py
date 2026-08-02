@@ -10,7 +10,12 @@ from langfuse import propagate_attributes
 from app.core.config import settings
 from app.core.prompts import SYSTEM_PROMPT
 from app.core.tracing import langfuse
-from app.models.schemas import ChatRequest, ChatResponse, SourceRef
+from app.models.schemas import (
+    ChatRequest,
+    ChatResponse,
+    FeedbackRequest,
+    SourceRef,
+)
 from app.services.embedding import EmbeddingService
 from app.services.llm import LLMService
 from app.services.order_flow import (
@@ -84,6 +89,7 @@ async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
     tool_dispatcher: ToolDispatcher = http_request.app.state.tool_dispatcher
     state_store = http_request.app.state.conversation_state
     qu_svc = http_request.app.state.query_understanding
+    rerank_svc = http_request.app.state.rerank
 
     query = request.message.strip()
     if len(query) < settings.min_query_length:
@@ -120,16 +126,26 @@ async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
             name="retrieval", as_type="retriever", input=qu.retrieval_query
         ) as rspan:
             chunks = await retrieval_svc.search(
-                query_vec, categories=qu.categories or None
+                query_vec,
+                k=settings.retrieval_candidates,
+                categories=qu.categories or None,
             )
             rspan.update(
                 output=[
-                    {"doc_type": c.doc_type, "source_id": c.source_id} for c in chunks
+                    {
+                        "doc_type": c.doc_type,
+                        "source_id": c.source_id,
+                        "distance": round(c.distance, 4),
+                    }
+                    for c in chunks
                 ]
             )
 
-        context = _format_context(chunks)
-        catalog = _extract_product_catalog(chunks)
+        # Top-k nearest go into the LLM context; the wider candidate set feeds
+        # the reranker for card selection.
+        context_chunks = chunks[: settings.retrieval_top_k]
+        context = _format_context(context_chunks)
+        catalog = _extract_product_catalog(context_chunks)
 
         system_content = SYSTEM_PROMPT.format(context=context)
         if catalog:
@@ -164,13 +180,24 @@ async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
             state.order_status, qu, order_draft_emitted, order_just_placed=just_placed
         )
 
-        display = _structured_display_products(
-            chunks, tool_products, settings.chat_display_products_max
-        )
         if suppresses_recommendations(final_status) or not qu.product_query:
             display = []  # no new-product cards while an order is pending/placed
-        elif qu.price_preference == "cheapest" and display:
-            display = await _sort_by_price(http_request.app.state.http, display)
+        else:
+            candidates = _card_candidates(
+                chunks, tool_products, settings.card_max_distance
+            )
+            with langfuse.start_as_current_observation(
+                name="rerank", as_type="span", input=qu.retrieval_query
+            ) as rr:
+                ranked = await rerank_svc.rerank(
+                    qu.retrieval_query,
+                    candidates,
+                    settings.chat_display_products_max,
+                )
+                rr.update(output=ranked)
+            display = [int(i) for i in ranked if str(i).isdigit()]
+            if qu.price_preference == "cheapest" and display:
+                display = await _sort_by_price(http_request.app.state.http, display)
 
         # Remember the product under order; clear it when the user moves on to browsing.
         if order_draft_emitted:
@@ -307,26 +334,30 @@ async def _run_tool_loop(
     )
 
 
-def _structured_display_products(
-    chunks: list[Chunk], tool_products: list[dict], cap: int
-) -> list[int]:
-    """The product ids to render as cards, from STRUCTURED sources (not prose):
-    recommend_similar_products results first, then retrieved product chunks, in
-    order, deduped, numeric-only, capped. Replaces the substring scrape."""
-    ordered: list[str] = [p["id"] for p in tool_products if p.get("id")]
-    ordered += [c.source_id for c in chunks if c.doc_type == "product"]
-    out: list[int] = []
-    seen: set[int] = set()
-    for sid in ordered:
-        try:
-            n = int(sid)
-        except (TypeError, ValueError):
+def _card_candidates(
+    chunks: list[Chunk], tool_products: list[dict], max_distance: float
+) -> list[dict]:
+    """Candidates for card reranking: recommend_similar_products results first
+    (already relevance-ranked), then retrieved product chunks whose cosine
+    distance is within threshold (weak matches dropped). Deduped by id."""
+    out: list[dict] = []
+    seen: set[str] = set()
+    for p in tool_products:
+        pid = p.get("id")
+        if pid and str(pid) not in seen:
+            seen.add(str(pid))
+            name = p.get("name") or ""
+            out.append({"id": str(pid), "name": name, "text": name})
+    for c in chunks:
+        if c.doc_type != "product":
             continue
-        if n > 0 and n not in seen:
-            seen.add(n)
-            out.append(n)
-        if len(out) >= cap:
-            break
+        if max_distance > 0 and c.distance > max_distance:
+            continue
+        pid = str(c.source_id)
+        if not pid.isdigit() or pid in seen:
+            continue
+        seen.add(pid)
+        out.append({"id": pid, "name": _chunk_product_name(c), "text": c.content[:300]})
     return out
 
 
@@ -430,3 +461,24 @@ def _extract_product_catalog(chunks: list[Chunk]) -> list[tuple[str, str]]:
         seen.add(c.source_id)
         out.append((c.source_id, _chunk_product_name(c)))
     return out
+
+
+@router.post("/feedback")
+async def feedback(req: FeedbackRequest) -> dict:
+    """Record a thumbs up/down for a chat session (monitoring/eval signal)."""
+    log.info(
+        "chat_feedback session=%s helpful=%s comment=%r",
+        req.session_id,
+        req.helpful,
+        req.comment,
+    )
+    try:
+        langfuse.create_score(
+            name="helpful",
+            value=1 if req.helpful else 0,
+            session_id=req.session_id,
+            comment=req.comment,
+        )
+    except Exception:  # noqa: BLE001 — Langfuse optional; never fail feedback
+        log.debug("langfuse score skipped", exc_info=True)
+    return {"status": "ok"}

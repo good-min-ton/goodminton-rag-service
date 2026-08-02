@@ -62,8 +62,10 @@ async def lifespan(app: FastAPI):
     app.state.llm = LLMService(http_client)
 
     from app.services.query_understanding import QueryUnderstandingService
+    from app.services.rerank import RerankService
 
     app.state.query_understanding = QueryUnderstandingService(app.state.llm)
+    app.state.rerank = RerankService(app.state.llm, http_client)
     app.state.indexer = indexer
     app.state.image_indexer = image_indexer
     app.state.consumer = consumer
