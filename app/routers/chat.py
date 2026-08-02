@@ -3,6 +3,8 @@
 import json
 import logging
 import re
+import time
+from collections import defaultdict, deque
 
 from fastapi import APIRouter, HTTPException, Request
 from langfuse import propagate_attributes
@@ -79,6 +81,78 @@ def _sanitize_answer(text: str) -> str:
         pass
     cleaned = re.sub(r"```(?:json)?.*?```", "", stripped, flags=re.DOTALL).strip()
     return cleaned if cleaned else SANITIZE_FALLBACK
+
+
+async def _stream_turn(turn_stream):
+    """Apply the sanitize-gate to one streamed generation turn.
+
+    `turn_stream` = LLMService.chat_with_tools_stream(...). Yields ("token", delta)
+    for prose deltas safe to stream live, then exactly one
+    ("result", ("tool", tool_calls) | ("answer", text)).
+
+    Guarantee: concatenation of streamed prose == _sanitize_answer(full), and no
+    tool-call/JSON text is ever streamed (it degrades to buffer-then-emit). Once
+    prose has streamed live the turn is an answer (tool_calls, if any, ignored)."""
+    parts: list[str] = []
+    head = ""
+    decided: str | None = None  # None | "live" | "hold"
+    tool_calls = None
+    async for kind, payload in turn_stream:
+        if kind == "final":
+            tool_calls = payload.get("tool_calls")
+            break
+        parts.append(payload)
+        if decided == "live":
+            yield ("token", payload)
+            continue
+        if decided == "hold":
+            continue
+        head += payload
+        stripped = head.lstrip()
+        if not stripped:
+            continue  # only whitespace so far — keep buffering
+        # '{' -> JSON blob; '`' -> possible ``` fence. Both need the whole string
+        # for _sanitize_answer, so hold. Everything else is prose -> stream live.
+        # Limitation: decides from the FIRST non-whitespace char only, so prose
+        # with a fence/JSON blob MID-text still streams live; the final `done`
+        # event's _sanitize_answer(full) + onDone overwrite the bubble, so at
+        # most a transient flash can occur.
+        if stripped[0] == "{" or stripped[0] == "`":
+            decided = "hold"
+        else:
+            decided = "live"
+            yield ("token", head)  # flush buffered head (incl. leading whitespace)
+    full = "".join(parts)
+    if decided == "live":
+        yield ("result", ("answer", _sanitize_answer(full)))
+        return
+    if tool_calls:
+        yield ("result", ("tool", tool_calls))
+        return
+    recovered = _recover_tool_call(full, _TOOL_NAMES)
+    if recovered is not None:
+        yield ("result", ("tool", [{"function": recovered}]))
+    else:
+        yield ("result", ("answer", _sanitize_answer(full)))
+
+
+# --- SSE streaming plumbing (flag-gated; wired to a route in a later commit) ---
+_STREAM_RATE_HITS: dict[str, deque] = defaultdict(deque)
+
+
+def _chat_rate_limited(ip: str) -> bool:
+    now = time.monotonic()
+    dq = _STREAM_RATE_HITS[ip]
+    while dq and now - dq[0] > settings.chat_rate_window_seconds:
+        dq.popleft()
+    if len(dq) >= settings.chat_rate_max:
+        return True
+    dq.append(now)
+    return False
+
+
+def _sse(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
 @router.post("")
@@ -331,6 +405,79 @@ async def _run_tool_loop(
         "Xin lỗi, mình không xử lý được yêu cầu này. Vui lòng liên hệ shop.",
         tool_products,
         order_draft,
+    )
+
+
+async def _run_tool_loop_stream(llm, dispatcher, messages: list[dict]):
+    """Streaming twin of _run_tool_loop. Async-generator: yields ("token", delta)
+    for the streamed terminal answer, then exactly one
+    ("final", (answer, tool_products, order_draft)). Reuses the exact tool-execution,
+    repeat-guard and parsing helpers; only the terminal text turn streams. The
+    forced-final (stuck) path is buffered (rare)."""
+    executed: dict[tuple[str, str], str] = {}
+    tool_products: list[dict] = []
+    order_draft: dict | None = None
+    repeats = 0
+    for _ in range(MAX_TOOL_ITERATIONS):
+        # Heartbeat before each turn's generation: a tool turn emits 0 tokens for
+        # ~10-16s on the 3B, so without this the client's idle-timeout could abort a
+        # healthy stream between turns. Endpoint maps this to an SSE comment.
+        yield ("heartbeat", None)
+        result = None
+        async for kind, val in _stream_turn(
+            llm.chat_with_tools_stream(messages, TOOL_SCHEMAS)
+        ):
+            if kind == "token":
+                yield ("token", val)
+            else:
+                result = val  # ("tool", tool_calls) | ("answer", text)
+        rkind, rval = result
+        if rkind == "answer":
+            yield ("final", (rval, tool_products, order_draft))
+            return
+        tool_calls = rval
+        messages.append({"role": "assistant", "content": "", "tool_calls": tool_calls})
+        for call in tool_calls:
+            fn = call.get("function", {})
+            name = fn.get("name", "")
+            arguments = fn.get("arguments") or {}
+            key = (name, json.dumps(arguments, sort_keys=True, default=str))
+            if key in executed:
+                repeats += 1
+                res = executed[key]
+            else:
+                res = await dispatcher.execute(name, arguments)
+                executed[key] = res
+                if name == "recommend_similar_products":
+                    _collect_tool_products(res, tool_products)
+                elif name == "prepare_order":
+                    parsed = _parse_order_draft(res)
+                    if parsed is not None:
+                        order_draft = parsed
+            messages.append({"role": "tool", "name": name, "content": res})
+        if repeats >= MAX_REPEATED_CALLS:
+            messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        "Dừng gọi công cụ. Trả lời khách bằng thông tin hiện có. "
+                        "Nếu bạn CHƯA tạo được đơn hàng nháp, nói rõ là chưa tạo "
+                        "được đơn và mời khách thử lại — TUYỆT ĐỐI KHÔNG nói đã "
+                        "tạo thẻ xác nhận hay đã đặt đơn. Nếu thiếu dữ liệu khác, "
+                        "nói rõ là không có thông tin và mời khách liên hệ shop."
+                    ),
+                }
+            )
+            final = await llm.chat(messages)
+            yield ("final", (_sanitize_answer(final), tool_products, order_draft))
+            return
+    yield (
+        "final",
+        (
+            "Xin lỗi, mình không xử lý được yêu cầu này. Vui lòng liên hệ shop.",
+            tool_products,
+            order_draft,
+        ),
     )
 
 
