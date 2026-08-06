@@ -1,4 +1,4 @@
-"""POST /search/image — visual product search (embed -> pgvector -> product_ids)."""
+"""POST /search/image + /search/text — product search (embed -> pgvector -> product_ids)."""
 
 import time
 from collections import defaultdict, deque
