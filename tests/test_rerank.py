@@ -69,3 +69,61 @@ async def test_rerank_disabled_returns_base_order(monkeypatch):
     svc = RerankService(_FakeLLM('["3"]'), None)
     out = await svc.rerank("q", CAND, top_n=2)
     assert out == ["1", "2"]
+
+
+class _Resp:
+    def __init__(self, scores):
+        self._scores = scores
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return {"scores": self._scores}
+
+
+class _FakeHTTP:
+    """Minimal async http stub for the bge cross-encoder call."""
+
+    def __init__(self, scores):
+        self.scores = scores
+        self.url = None
+
+    async def post(self, url, json=None, timeout=None):
+        self.url = url
+        return _Resp(self.scores)
+
+
+def test_rerank_mode_defaults_to_bge():
+    # The team base defaults to bge (our cross-encoder service) as the canonical
+    # ranker; llm listwise stays available as an explicit fallback mode.
+    from app.core.config import Settings
+
+    assert Settings.model_fields["rerank_mode"].default == "bge"
+
+
+async def test_rerank_bge_orders_by_scores_and_falls_back_to_embed_url(monkeypatch):
+    monkeypatch.setattr(settings, "rerank_enabled", True)
+    monkeypatch.setattr(settings, "rerank_mode", "bge")
+    monkeypatch.setattr(
+        settings, "rerank_url", None
+    )  # -> fall back to embed_service_url
+    monkeypatch.setattr(settings, "embed_service_url", "http://embed:8003")
+    http = _FakeHTTP([0.1, 0.9, 0.5])  # cand 1/2/3 -> ranked by score desc: 2,3,1
+    svc = RerankService(None, http)
+    out = await svc.rerank("q", CAND, top_n=3)
+    assert out == ["2", "3", "1"]
+    assert http.url == "http://embed:8003/rerank"  # bge activates on mode alone
+
+
+async def test_rerank_bge_degrades_to_cosine_when_service_down(monkeypatch):
+    class _BoomHTTP:
+        async def post(self, *a, **k):
+            raise RuntimeError("connect fail")
+
+    monkeypatch.setattr(settings, "rerank_enabled", True)
+    monkeypatch.setattr(settings, "rerank_mode", "bge")
+    monkeypatch.setattr(settings, "embed_service_url", "http://embed:8003")
+    svc = RerankService(None, _BoomHTTP())
+    out = await svc.rerank("q", CAND, top_n=5)
+    assert out == ["1", "2", "3"]  # degrade to input (cosine) order, never empty

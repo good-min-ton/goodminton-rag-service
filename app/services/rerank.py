@@ -58,7 +58,7 @@ class RerankService:
         if not settings.rerank_enabled or len(candidates) <= 1:
             return base[:top_n]
         try:
-            if settings.rerank_mode == "bge" and settings.rerank_url:
+            if settings.rerank_mode == "bge":
                 ranked = await self._bge(query, candidates)
             else:
                 ranked = await self._llm_rerank(query, candidates)
@@ -83,8 +83,11 @@ class RerankService:
         return _parse_ids(raw)
 
     async def _bge(self, query: str, candidates: list[dict]) -> list[str]:
+        # Default to the shared embed-service (same one image search uses) when no
+        # dedicated rerank_url is configured — the /rerank contract is identical.
+        base_url = settings.rerank_url or settings.embed_service_url
         r = await self._http.post(
-            f"{settings.rerank_url}/rerank",
+            f"{base_url}/rerank",
             json={
                 "query": query,
                 "documents": [c.get("text") or c["name"] for c in candidates],
