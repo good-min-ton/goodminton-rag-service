@@ -1,4 +1,4 @@
-name: CI - Lint & Build
+name: CI - Lint, Test & Build
 
 on:
   pull_request:
@@ -26,6 +26,25 @@ jobs:
 
       - name: Ruff lint
         run: uv run ruff check .
+
+  test:
+    name: Test (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+
+      - name: Sync dependencies
+        run: uv sync --frozen
+
+      # DB-backed tests self-skip when DATABASE_URL is unset, so no service
+      # container is needed here.
+      - name: Run tests
+        run: uv run pytest -q
 
   build:
     name: Build Docker image
