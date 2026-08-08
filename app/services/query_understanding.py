@@ -4,6 +4,7 @@ using prior conversation state. Category selection is NEVER left to the tool loo
 """
 
 import logging
+import re
 
 from pydantic import BaseModel, Field
 
@@ -12,12 +13,22 @@ from app.services.conversation_state import ConversationState
 log = logging.getLogger(__name__)
 
 # KEY = the exact `product['category']` string stored in kb_chunks.metadata.
-# VALUE = trigger keywords (lowercase, unaccented-tolerant substrings).
+# VALUE = trigger keywords, matched on WORD BOUNDARIES (see _CATEGORY_PATTERNS).
+#
+# Substring matching used to be the rule here and it mis-tagged the shop's most
+# common question: "bao nhiêu" contains "ao", so every "vợt ... giá bao nhiêu?"
+# was classified as a shirt question as well as a racket one. Multi-category
+# retrieval then reserved a fixed quota of shirt chunks, which is how a racket
+# question ended up showing shirts among its product cards.
+#
+# Bare unaccented "ao" and "quan" stay out: they are ordinary Vietnamese words
+# ("ao", "quan tâm", "liên quan") that a word boundary alone cannot disambiguate,
+# so they only count inside the full phrase. The accented forms are unambiguous.
 CATEGORY_KEYWORDS: dict[str, list[str]] = {
     "Vợt cầu lông": ["vợt", "vot", "racket", "racquet"],
-    "Giày cầu lông": ["giày", "giay", "shoe", "sneaker", "đôi giày", "doi giay"],
-    "Quần cầu lông": ["quần", "quan", "short", "shorts"],
-    "Áo cầu lông": ["áo", "ao", "shirt", "jersey"],
+    "Giày cầu lông": ["giày", "giay", "shoe", "sneaker"],
+    "Quần cầu lông": ["quần", "quan cầu lông", "quan cau long", "short", "shorts"],
+    "Áo cầu lông": ["áo", "ao cầu lông", "ao cau long", "shirt", "jersey"],
     "Dây cước cầu lông": [
         "dây cước",
         "day cuoc",
@@ -27,6 +38,14 @@ CATEGORY_KEYWORDS: dict[str, list[str]] = {
         "căng vợt",
         "cang vot",
     ],
+}
+
+# `\b` is Unicode-aware for str patterns, so it treats Vietnamese diacritics as
+# word characters: "ao" does not match inside "bao", and "áo" still matches on
+# its own. Compiled once — analyze() runs on every chat turn.
+_CATEGORY_PATTERNS: dict[str, re.Pattern[str]] = {
+    category: re.compile("|".join(rf"\b{re.escape(kw)}\b" for kw in keywords))
+    for category, keywords in CATEGORY_KEYWORDS.items()
 }
 
 _PRICE_CHEAPEST = [
@@ -89,11 +108,7 @@ class QueryUnderstandingService:
         self._llm = llm  # LLMService
 
     def _rule_categories(self, low: str) -> list[str]:
-        out: list[str] = []
-        for category, kws in CATEGORY_KEYWORDS.items():
-            if any(kw in low for kw in kws):
-                out.append(category)
-        return out
+        return [c for c, pat in _CATEGORY_PATTERNS.items() if pat.search(low)]
 
     def _rule_intent(self, low: str) -> str | None:
         if any(k in low for k in _INTENT_STOCK):
