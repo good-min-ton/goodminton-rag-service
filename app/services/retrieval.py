@@ -38,6 +38,12 @@ class RetrievalService:
                 merged.extend(
                     await self._search_one(query_embedding, per, [cat], doc_type)
                 )
+            # Re-sort globally. The quota guarantees every category has candidates,
+            # but callers slice this list (the LLM context takes the leading top_k),
+            # and in per-category order that slice is just the first category's
+            # chunks — the second category would reach the product cards without
+            # ever reaching the answer it is supposed to belong to.
+            merged.sort(key=lambda c: c.distance)
             return merged
         return await self._search_one(query_embedding, top_k, categories, doc_type)
 

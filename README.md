@@ -258,7 +258,11 @@ flowchart TD
 `scripts/bootstrap.py` is idempotent:
 
 - static chunks count is zero → index `data/static_docs/*.md`; otherwise skip
-- product chunks count is zero → backfill every visible product through the internal API; otherwise skip
+- any visible product with no chunk in `kb_chunks` → index exactly those products
+
+The product check compares against the source of truth (`products WHERE is_visible`) rather than asking whether *any* chunk exists. Those differ whenever a backfill dies partway — Ollama restarting mid-run, shop-api not healthy yet — which leaves chunks behind for some products and none for the rest. A presence check calls that state "done" and the missing products never get indexed; questions about them then retrieve whatever else happens to be in the store.
+
+Bootstrap exits non-zero when products were left unindexed, so a half-populated cold start surfaces as a failed `rag-init` container instead of passing quietly.
 
 Running `up -d` on an already-healthy stack costs a few seconds — both init containers detect existing state and exit immediately.
 
