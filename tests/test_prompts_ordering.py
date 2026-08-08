@@ -3,7 +3,7 @@ from app.core.prompts import SYSTEM_PROMPT
 
 def test_system_prompt_has_ordering_rules():
     for keyword in (
-        "get_pricing(product_id)",
+        "get_product_availability(product_id)",
         "prepare_order(items)",
         "BẤM XÁC NHẬN",
         "TUYỆT ĐỐI không bịa product_id/variant_id",

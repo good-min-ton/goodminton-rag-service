@@ -63,14 +63,19 @@ class _Dispatcher:
 
 
 async def test_run_tool_loop_pricing_then_prepare_order_yields_draft():
-    # LLM: turn 1 -> get_pricing, turn 2 -> prepare_order, turn 3 -> text answer.
+    # LLM: turn 1 -> get_product_availability, turn 2 -> prepare_order, turn 3 -> text answer.
     llm = AsyncMock()
     llm.chat_with_tools.side_effect = [
         {
             "role": "assistant",
             "content": "",
             "tool_calls": [
-                {"function": {"name": "get_pricing", "arguments": {"product_id": 12}}}
+                {
+                    "function": {
+                        "name": "get_product_availability",
+                        "arguments": {"product_id": 12},
+                    }
+                }
             ],
         },
         {
@@ -118,7 +123,7 @@ async def test_run_tool_loop_pricing_then_prepare_order_yields_draft():
     )
     dispatcher = _Dispatcher(
         {
-            "get_pricing": json.dumps(
+            "get_product_availability": json.dumps(
                 {"productId": 12, "productName": "X", "variants": []}
             ),
             "prepare_order": draft_json,
@@ -131,11 +136,11 @@ async def test_run_tool_loop_pricing_then_prepare_order_yields_draft():
     assert order_draft["items"][0]["variant_id"] == "45"
     assert order_draft["total"] == 6400000.0
     assert "XÁC NHẬN" in answer
-    assert dispatcher.calls == ["get_pricing", "prepare_order"]
+    assert dispatcher.calls == ["get_product_availability", "prepare_order"]
 
 
 async def test_run_tool_loop_repeated_calls_force_final_without_draft():
-    # Model gets stuck repeating the SAME get_pricing call. After
+    # Model gets stuck repeating the SAME get_product_availability call. After
     # MAX_REPEATED_CALLS (=3) cache-hits the loop forces a tool-free final
     # answer. No prepare_order ran, so order_draft stays None AND the
     # forced-final answer must not claim a confirmation card exists.
@@ -143,7 +148,12 @@ async def test_run_tool_loop_repeated_calls_force_final_without_draft():
         "role": "assistant",
         "content": "",
         "tool_calls": [
-            {"function": {"name": "get_pricing", "arguments": {"product_id": 12}}}
+            {
+                "function": {
+                    "name": "get_product_availability",
+                    "arguments": {"product_id": 12},
+                }
+            }
         ],
     }
     llm = AsyncMock()
@@ -153,7 +163,7 @@ async def test_run_tool_loop_repeated_calls_force_final_without_draft():
 
     dispatcher = _Dispatcher(
         {
-            "get_pricing": json.dumps(
+            "get_product_availability": json.dumps(
                 {"productId": 12, "productName": "X", "variants": []}
             )
         }
@@ -165,7 +175,7 @@ async def test_run_tool_loop_repeated_calls_force_final_without_draft():
     assert llm.chat.await_count == 1  # forced-final path was taken
     assert answer == "Xin lỗi, mình chưa tạo được đơn, bạn thử lại giúp nhé."
     assert dispatcher.calls == [
-        "get_pricing"
+        "get_product_availability"
     ]  # repeats are cache hits, not re-executed
     assert (
         llm.chat_with_tools.await_count == 4
@@ -173,14 +183,14 @@ async def test_run_tool_loop_repeated_calls_force_final_without_draft():
 
 
 async def test_tool_loop_recovers_tool_call_from_content():
-    # Turn 1: model emits a get_pricing call as JSON *content* (tool_calls empty).
+    # Turn 1: model emits a get_product_availability call as JSON *content* (tool_calls empty).
     # Turn 2: model gives a natural-language answer. The loop must recover+execute
     # the call and return the clean answer — never the raw JSON.
     llm = AsyncMock()
     llm.chat_with_tools.side_effect = [
         {
             "role": "assistant",
-            "content": '{"name": "get_pricing", "arguments": {"product_id": 12}}',
+            "content": '{"name": "get_product_availability", "arguments": {"product_id": 12}}',
             "tool_calls": [],
         },
         {
@@ -190,11 +200,13 @@ async def test_tool_loop_recovers_tool_call_from_content():
         },
     ]
     dispatcher = _Dispatcher(
-        {"get_pricing": json.dumps({"productId": 12, "variants": []})}
+        {"get_product_availability": json.dumps({"productId": 12, "variants": []})}
     )
     answer, _, _ = await _run_tool_loop(llm, dispatcher, [])
     assert answer == "Vợt Astrox 12 giá 1.200.000đ ạ."
-    assert dispatcher.calls == ["get_pricing"]  # recovered call was executed
+    assert dispatcher.calls == [
+        "get_product_availability"
+    ]  # recovered call was executed
     assert "{" not in answer
 
 
