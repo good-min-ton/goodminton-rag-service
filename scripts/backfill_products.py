@@ -50,35 +50,70 @@ async def fetch_product_ids(conn: asyncpg.Connection) -> list[int]:
     return [r["id"] for r in rows]
 
 
-async def main() -> None:
+async def fetch_unindexed_product_ids(conn: asyncpg.Connection) -> list[int]:
+    """Visible products with no chunk in kb_chunks — what a partially failed
+    backfill leaves behind. Used by bootstrap so a half-populated knowledge base
+    heals on the next `up -d` instead of staying half-populated forever."""
+    rows = await conn.fetch(
+        """
+        SELECT p.id
+        FROM products p
+        WHERE p.is_visible = true
+          AND NOT EXISTS (
+              SELECT 1 FROM kb_chunks k
+              WHERE k.doc_type = 'product' AND k.source_id = p.id::text
+          )
+        ORDER BY p.id
+        """
+    )
+    return [r["id"] for r in rows]
+
+
+async def index_ids(ids: list[int]) -> int:
+    """Index the given products. Returns the failure count so callers can decide
+    whether the run was a success — logging it is not enough, a one-shot
+    container that exits 0 reports success no matter how much it dropped."""
+    if not ids:
+        log.info("Nothing to index")
+        return 0
+
     pool = await asyncpg.create_pool(
         dsn=resolve_database_url(),
         init=lambda conn: register_vector(conn),
     )
+    try:
+        async with httpx.AsyncClient() as http_client:
+            indexer = ProductIndexer(
+                pool, EmbeddingService(http_client), ProductClient(http_client)
+            )
+            succeeded = 0
+            failed = 0
+            for pid in ids:
+                try:
+                    await indexer.index_product(pid)
+                    succeeded += 1
+                except Exception:
+                    log.exception("Failed to index product %s", pid)
+                    failed += 1
+        log.info("Done. Succeeded: %d | Failed: %d", succeeded, failed)
+        return failed
+    finally:
+        await pool.close()
 
-    async with httpx.AsyncClient() as http_client:
-        embedding = EmbeddingService(http_client)
-        product_client = ProductClient(http_client)
-        indexer = ProductIndexer(pool, embedding, product_client)
 
+async def main() -> int:
+    """Full rebuild of every visible product. Returns the failure count."""
+    pool = await asyncpg.create_pool(dsn=resolve_database_url())
+    try:
         async with pool.acquire() as conn:
             ids = await fetch_product_ids(conn)
-        log.info("Found %d visible products to index", len(ids))
-
-        succeeded = 0
-        failed = 0
-        for pid in ids:
-            try:
-                await indexer.index_product(pid)
-                succeeded += 1
-            except Exception:
-                log.exception("Failed to index product %s", pid)
-                failed += 1
-
-        log.info("Done. Succeeded: %d | Failed: %d", succeeded, failed)
-
-    await pool.close()
+    finally:
+        await pool.close()
+    log.info("Found %d visible products to index", len(ids))
+    return await index_ids(ids)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    # Non-zero on any failure: the rag-init container is the only signal that a
+    # cold start actually populated the knowledge base.
+    sys.exit(1 if asyncio.run(main()) else 0)

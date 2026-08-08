@@ -40,20 +40,32 @@ async def wait_for_db(dsn: str) -> asyncpg.Connection:
     raise RuntimeError(f"Database unreachable: {last_error}")
 
 
-async def main() -> None:
+async def main() -> int:
+    """Returns the number of products that failed to index."""
     dsn = backfill_products.resolve_database_url()
     conn = await wait_for_db(dsn)
     try:
         static_count = await conn.fetchval(
             "SELECT COUNT(*) FROM kb_chunks WHERE doc_type = 'static'"
         )
-        product_count = await conn.fetchval(
-            "SELECT COUNT(*) FROM kb_chunks WHERE doc_type = 'product'"
+        indexed = await conn.fetchval(
+            "SELECT COUNT(DISTINCT source_id) FROM kb_chunks WHERE doc_type = 'product'"
         )
+        # Compare against the source of truth, not against zero. The old guard was
+        # `product_count == 0`, so a backfill that died halfway (Ollama restarting,
+        # shop-api not up yet) left chunks behind and every later run reported
+        # "present -> skip". The missing products were then never indexed, and a
+        # question about one of them retrieved whatever else was in the store.
+        missing = await backfill_products.fetch_unindexed_product_ids(conn)
     finally:
         await conn.close()
 
-    log.info("kb_chunks: static=%d, product=%d", static_count, product_count)
+    log.info(
+        "kb_chunks: static=%d, products indexed=%d, missing=%d",
+        static_count,
+        indexed,
+        len(missing),
+    )
 
     if static_count == 0:
         log.info("Static chunks missing -> indexing static docs")
@@ -61,14 +73,19 @@ async def main() -> None:
     else:
         log.info("Static chunks present -> skip")
 
-    if product_count == 0:
-        log.info("Product chunks missing -> backfilling products")
-        await backfill_products.main()
+    if missing:
+        log.info("Indexing %d product(s) with no chunks", len(missing))
+        failed = await backfill_products.index_ids(missing)
     else:
-        log.info("Product chunks present -> skip")
+        log.info("Every visible product is indexed -> skip")
+        failed = 0
 
     log.info("Bootstrap complete")
+    return failed
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    # Non-zero when products were left unindexed, so a cold start that only
+    # half-populated the knowledge base shows up as a failed rag-init container
+    # instead of passing quietly.
+    sys.exit(1 if asyncio.run(main()) else 0)
