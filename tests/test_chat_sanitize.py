@@ -5,8 +5,7 @@ from app.routers.chat import (
 )
 
 _TOOLS = {
-    "get_pricing",
-    "check_inventory",
+    "get_product_availability",
     "recommend_similar_products",
     "prepare_order",
 }
@@ -14,17 +13,21 @@ _TOOLS = {
 
 def test_recover_named_tool_call():
     got = _recover_tool_call(
-        '{"name": "get_pricing", "arguments": {"product_id": 12}}', _TOOLS
+        '{"name": "get_product_availability", "arguments": {"product_id": 12}}', _TOOLS
     )
-    assert got == {"name": "get_pricing", "arguments": {"product_id": 12}}
+    assert got == {"name": "get_product_availability", "arguments": {"product_id": 12}}
 
 
 def test_recover_nested_function_form():
     got = _recover_tool_call(
-        '{"function": {"name": "check_inventory", "arguments": {"variant_id": 45}}}',
+        '{"function": {"name": "recommend_similar_products", '
+        '"arguments": {"product_id": 45}}}',
         _TOOLS,
     )
-    assert got == {"name": "check_inventory", "arguments": {"variant_id": 45}}
+    assert got == {
+        "name": "recommend_similar_products",
+        "arguments": {"product_id": 45},
+    }
 
 
 def test_recover_unknown_tool_name_returns_none():
@@ -52,7 +55,8 @@ def test_sanitize_pure_json_returns_fallback():
 
 def test_sanitize_fenced_json_only_returns_fallback():
     assert (
-        _sanitize_answer('```json\n{"name": "get_pricing"}\n```') == SANITIZE_FALLBACK
+        _sanitize_answer('```json\n{"name": "get_product_availability"}\n```')
+        == SANITIZE_FALLBACK
     )
 
 

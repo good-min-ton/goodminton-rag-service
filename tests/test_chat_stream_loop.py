@@ -47,8 +47,15 @@ async def _run(llm, dispatcher):
 
 
 @pytest.mark.asyncio
-async def test_pricing_then_prepare_order_then_streamed_answer():
-    tc_price = [{"function": {"name": "get_pricing", "arguments": {"product_id": 12}}}]
+async def test_availability_then_prepare_order_then_streamed_answer():
+    tc_price = [
+        {
+            "function": {
+                "name": "get_product_availability",
+                "arguments": {"product_id": 12},
+            }
+        }
+    ]
     tc_order = [
         {
             "function": {
@@ -72,7 +79,7 @@ async def test_pricing_then_prepare_order_then_streamed_answer():
     )
     disp = _Dispatcher(
         {
-            "get_pricing": json.dumps({"productId": 12, "variants": []}),
+            "get_product_availability": json.dumps({"productId": 12, "variants": []}),
             "prepare_order": draft,
         }
     )
@@ -80,32 +87,44 @@ async def test_pricing_then_prepare_order_then_streamed_answer():
     assert live == "Mời bạn bấm XÁC NHẬN."
     assert answer == "Mời bạn bấm XÁC NHẬN."
     assert order_draft is not None and order_draft["total"] == 6400000.0
-    assert disp.calls == ["get_pricing", "prepare_order"]
-    assert heartbeats == 3  # one per loop turn: pricing, prepare_order, answer
+    assert disp.calls == ["get_product_availability", "prepare_order"]
+    assert heartbeats == 3  # one per loop turn: availability, prepare_order, answer
 
 
 @pytest.mark.asyncio
 async def test_status_emitted_per_tool_call_including_cache_hits():
     """The UI's thinking indicator names the tool that is running, so every tool
     call must surface a status — a cache hit is still a step the user is waiting
-    on. Here the repeated get_pricing yields a third status but only two
+    on. Here the repeated availability lookup yields a third status but only two
     dispatcher executions."""
-    tc_price = [{"function": {"name": "get_pricing", "arguments": {"product_id": 12}}}]
-    tc_inv = [
-        {"function": {"name": "check_inventory", "arguments": {"variant_id": 45}}}
+    tc_avail = [
+        {
+            "function": {
+                "name": "get_product_availability",
+                "arguments": {"product_id": 12},
+            }
+        }
+    ]
+    tc_similar = [
+        {
+            "function": {
+                "name": "recommend_similar_products",
+                "arguments": {"product_id": 12},
+            }
+        }
     ]
     llm = _FakeLLM(
         [
-            ([], tc_price),
-            ([], tc_inv),
-            ([], tc_price),  # repeat -> cache hit
+            ([], tc_avail),
+            ([], tc_similar),
+            ([], tc_avail),  # repeat -> cache hit
             (["Còn hàng nhé."], None),
         ]
     )
     disp = _Dispatcher(
         {
-            "get_pricing": json.dumps({"productId": 12, "variants": []}),
-            "check_inventory": json.dumps([{"store": "HQ", "quantity": 3}]),
+            "get_product_availability": json.dumps({"productId": 12, "variants": []}),
+            "recommend_similar_products": json.dumps([]),
         }
     )
     statuses, final = [], None
@@ -115,24 +134,34 @@ async def test_status_emitted_per_tool_call_including_cache_hits():
         elif kind == "final":
             final = val
     assert [s["tool"] for s in statuses] == [
-        "get_pricing",
-        "check_inventory",
-        "get_pricing",
+        "get_product_availability",
+        "recommend_similar_products",
+        "get_product_availability",
     ]
-    assert disp.calls == ["get_pricing", "check_inventory"]  # 3rd was cached
+    # 3rd call was a cache hit
+    assert disp.calls == ["get_product_availability", "recommend_similar_products"]
     assert final[0] == "Còn hàng nhé."
 
 
 @pytest.mark.asyncio
 async def test_repeated_calls_force_final_buffered():
-    tc = [{"function": {"name": "get_pricing", "arguments": {"product_id": 12}}}]
+    tc = [
+        {
+            "function": {
+                "name": "get_product_availability",
+                "arguments": {"product_id": 12},
+            }
+        }
+    ]
     llm = _FakeLLM([([], tc), ([], tc), ([], tc), ([], tc)])
-    disp = _Dispatcher({"get_pricing": json.dumps({"productId": 12, "variants": []})})
+    disp = _Dispatcher(
+        {"get_product_availability": json.dumps({"productId": 12, "variants": []})}
+    )
     live, (answer, _tp, order_draft), heartbeats = await _run(llm, disp)
     assert order_draft is None
     assert llm.forced == 1  # forced-final path
     assert answer == "Xin lỗi, mình chưa tạo được đơn, bạn thử lại nhé."
-    assert disp.calls == ["get_pricing"]  # repeats are cache hits
+    assert disp.calls == ["get_product_availability"]  # repeats are cache hits
     # 4 loop turns run before the 3rd repeat trips forced-final (1 original call
     # + 3 repeats == MAX_REPEATED_CALLS), one heartbeat per turn.
     assert heartbeats == 4

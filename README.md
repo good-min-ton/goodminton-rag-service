@@ -137,12 +137,11 @@ Steps in detail:
 
 ## 4. Tool Calling: Real-Time Price and Stock
 
-Two tools are registered with the LLM. The dispatcher maps tool calls to Spring's internal endpoints, which are protected by a shared `X-Internal-Key` header and are only reachable inside the Docker network.
+One tool answers both halves of the question. The dispatcher maps it to Spring's internal endpoints, which are protected by a shared `X-Internal-Key` header and are only reachable inside the Docker network.
 
-| Tool | Spring endpoint | Returns |
+| Tool | Spring endpoints | Returns |
 |---|---|---|
-| `get_pricing(product_id)` | `GET /api/internal/products/{id}/pricing` | All variants with color, size, SKU, price, sale price |
-| `check_inventory(variant_id)` | `GET /api/internal/variants/{id}/inventory` | Quantity per store branch |
+| `get_product_availability(product_id)` | `GET /api/internal/products/{id}/pricing`, then `GET /api/internal/variants/{id}/inventory` per variant | Every variant with color, size, SKU, price, sale price, `totalStock` and the branches holding stock |
 
 ```mermaid
 sequenceDiagram
@@ -153,22 +152,24 @@ sequenceDiagram
 
     U->>RAG: "How much is the Astrox 99, is 4U in stock?"
     RAG->>OL: chat + tools (context contains product_id=10)
-    OL-->>RAG: tool_call get_pricing(10)
+    OL-->>RAG: tool_call get_product_availability(10)
     RAG->>SP: GET /api/internal/products/10/pricing
     SP-->>RAG: variants: [{variant_id: 7, size: 4U, price, sale_price}, ...]
-    RAG->>OL: chat + tool result
-    OL-->>RAG: tool_call check_inventory(7)
-    RAG->>SP: GET /api/internal/variants/7/inventory
-    SP-->>RAG: [{store: HQ, quantity: 12}]
-    RAG->>OL: chat + tool result
+    par one concurrent inventory read per variant
+        RAG->>SP: GET /api/internal/variants/7/inventory
+        SP-->>RAG: [{store: HQ, quantity: 12}]
+    end
+    RAG->>OL: chat + tool result (price + stock together)
     OL-->>RAG: final answer with real price and stock
     RAG-->>U: answer
 ```
 
 Design notes:
 
-- The multi-step chain is driven by the model itself: pricing first (to discover `variant_id`s), then inventory. The service only executes and feeds back results.
-- Tool failures return a JSON `{"error": ...}` payload to the model instead of raising, so the bot can apologize gracefully rather than crash the request.
+- **One tool, not two.** Pricing and inventory used to be separate, and the model had to call pricing first to discover `variant_id`s before it could ask about stock. That ordering cost a full extra LLM round trip on the most common question in the shop. Fanning the inventory reads out inside the tool trades that turn for N internal HTTP calls on the Docker network, which run concurrently and are orders of magnitude cheaper.
+- The lookup is capped at 20 variants; when a product has more, the payload carries a `note` saying so rather than truncating silently.
+- Stores with zero quantity are dropped from the payload. `totalStock: 0` is what "out of stock everywhere" looks like, and the prompt this lands in is already context-tight.
+- Tool failures return a JSON `{"error": ...}` payload to the model instead of raising, so the bot can apologize gracefully rather than crash the request. An inventory read that fails fails the whole lookup: a half-known stock picture would have the model confidently report "out of stock" for a variant it simply could not read.
 - A hard iteration cap (10) prevents infinite tool loops when retrieval surfaces the wrong product.
 
 ## 5. Product Sync: Spring to RAG via RabbitMQ

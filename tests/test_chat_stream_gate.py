@@ -43,18 +43,30 @@ async def test_json_blob_buffered_to_fallback_no_live():
 @pytest.mark.asyncio
 async def test_recovered_tool_call_from_content_emits_no_tokens():
     live, result = await _drain(
-        ['{"name": "get_pricing", "arguments": {"product_id": 12}}']
+        ['{"name": "get_product_availability", "arguments": {"product_id": 12}}']
     )
     assert live == ""
     assert result[0] == "tool"
     assert result[1] == [
-        {"function": {"name": "get_pricing", "arguments": {"product_id": 12}}}
+        {
+            "function": {
+                "name": "get_product_availability",
+                "arguments": {"product_id": 12},
+            }
+        }
     ]
 
 
 @pytest.mark.asyncio
 async def test_structured_tool_call_no_content():
-    tc = [{"function": {"name": "get_pricing", "arguments": {"product_id": 12}}}]
+    tc = [
+        {
+            "function": {
+                "name": "get_product_availability",
+                "arguments": {"product_id": 12},
+            }
+        }
+    ]
     live, result = await _drain([], tool_calls=tc)
     assert live == ""
     assert result == ("tool", tc)
@@ -91,7 +103,14 @@ async def test_whitespace_only_and_empty_fall_back():
 async def test_live_prose_ignores_tool_calls_at_final():
     # Once prose has streamed live, the turn is an answer — tool_calls at final
     # are ignored (locks branch-order: decided=='live' wins before tool_calls).
-    tc = [{"function": {"name": "get_pricing", "arguments": {"product_id": 1}}}]
+    tc = [
+        {
+            "function": {
+                "name": "get_product_availability",
+                "arguments": {"product_id": 1},
+            }
+        }
+    ]
     live, result = await _drain(["Xin chào"], tool_calls=tc)
     assert live == "Xin chào"
     assert result == ("answer", "Xin chào")

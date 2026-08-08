@@ -1,5 +1,6 @@
 """Tool definitions and dispatcher for LLM function calling."""
 
+import asyncio
 import json
 import logging
 from typing import Any
@@ -12,15 +13,22 @@ from app.services.similar import ProductNotIndexedError, SimilarProductsService
 
 log = logging.getLogger(__name__)
 
+# Read-amplification cap: one availability lookup fans out to one inventory call
+# per variant. Real products have a handful; this bounds the pathological case.
+MAX_VARIANTS_PER_LOOKUP = 20
+
 
 TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
-            "name": "get_pricing",
+            "name": "get_product_availability",
             "description": (
-                "Lấy giá hiện tại và danh sách variants (size, màu, SKU) của một sản phẩm. "
-                "Dùng khi user hỏi về giá, sale, các phiên bản size/màu."
+                "Lấy giá VÀ tồn kho của một sản phẩm trong MỘT lần gọi. Trả về mọi "
+                "variant (size, màu, SKU, giá, giá sale) kèm số lượng còn tại từng "
+                "chi nhánh. Dùng khi user hỏi giá, sale, các phiên bản size/màu, "
+                "'còn hàng không', 'có size X không', 'cửa hàng nào còn'. "
+                "KHÔNG cần gọi thêm tool nào khác để biết tồn kho."
             ),
             "parameters": {
                 "type": "object",
@@ -31,26 +39,6 @@ TOOL_SCHEMAS = [
                     }
                 },
                 "required": ["product_id"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "check_inventory",
-            "description": (
-                "Kiểm tra tồn kho của một variant (biến thể sản phẩm) tại các chi nhánh. "
-                "Dùng khi user hỏi 'còn hàng không', 'có size X không', 'cửa hàng nào còn'."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "variant_id": {
-                        "type": "integer",
-                        "description": "ID của variant (lấy từ get_pricing trước)",
-                    }
-                },
-                "required": ["variant_id"],
             },
         },
     },
@@ -81,7 +69,8 @@ TOOL_SCHEMAS = [
             "description": (
                 "Tạo ĐƠN HÀNG NHÁP (chưa đặt) đã tính giá + kiểm tra tồn kho để khách xác "
                 "nhận trên giao diện. CHỈ gọi khi khách muốn mua/đặt VÀ đã biết variant_id "
-                "(PHẢI gọi get_pricing trước để lấy variant_id). Tool này KHÔNG tạo đơn thật."
+                "(PHẢI gọi get_product_availability trước để lấy variant_id). "
+                "Tool này KHÔNG tạo đơn thật."
             ),
             "parameters": {
                 "type": "object",
@@ -99,7 +88,7 @@ TOOL_SCHEMAS = [
                                 },
                                 "variant_id": {
                                     "type": "integer",
-                                    "description": "ID variant (lấy từ get_pricing).",
+                                    "description": "ID variant (lấy từ get_product_availability).",
                                 },
                                 "quantity": {
                                     "type": "integer",
@@ -127,12 +116,8 @@ class ToolDispatcher:
     async def execute(self, name: str, arguments: dict[str, Any]) -> str:
         """Run a tool by name and return its result as a JSON string for the LLM."""
         try:
-            if name == "get_pricing":
-                result = await self._client.get_pricing(int(arguments["product_id"]))
-            elif name == "check_inventory":
-                result = await self._client.check_inventory(
-                    int(arguments["variant_id"])
-                )
+            if name == "get_product_availability":
+                result = await self._availability(int(arguments["product_id"]))
             elif name == "prepare_order":
                 result = await self._prepare_order(arguments.get("items") or [])
             elif name == "recommend_similar_products":
@@ -192,6 +177,57 @@ class ToolDispatcher:
             return json.dumps(
                 {"error": "Hệ thống tra cứu tạm thời gặp lỗi."}, ensure_ascii=False
             )
+
+    async def _availability(self, product_id: int) -> dict:
+        """Pricing plus per-store stock for every variant, in one tool call.
+
+        Replaces the old get_pricing -> check_inventory pair. The model had to
+        call the first to discover variant ids before it could call the second,
+        which cost a whole extra LLM round trip on the most common question
+        ("how much is it, is it in stock?"). Fanning the inventory reads out here
+        trades that turn for N internal HTTP calls on the Docker network, which
+        are orders of magnitude cheaper and run concurrently.
+
+        Stores with zero quantity are dropped: the model only needs to know where
+        stock exists, and the prompt they land in is already context-tight.
+        """
+        pricing = await self._client.get_pricing(product_id)
+        variants = pricing.get("variants") or []
+        capped = variants[:MAX_VARIANTS_PER_LOOKUP]
+
+        # Any failure propagates to execute()'s handlers. These calls hit the same
+        # service that just served the pricing read, so a partial failure is far
+        # less likely than a total one, and a half-known stock picture would be
+        # worse than a clean "lookup failed".
+        stocks = await asyncio.gather(
+            *(self._client.check_inventory(int(v["variantId"])) for v in capped)
+        )
+
+        out: list[dict] = []
+        for variant, rows in zip(capped, stocks, strict=True):
+            in_stock = [
+                {"storeName": r.get("storeName"), "quantity": r.get("quantity") or 0}
+                for r in rows
+                if (r.get("quantity") or 0) > 0
+            ]
+            out.append(
+                {
+                    **variant,
+                    "totalStock": sum(r["quantity"] for r in in_stock),
+                    "stores": in_stock,
+                }
+            )
+
+        result = {
+            "productId": pricing.get("productId"),
+            "productName": pricing.get("productName"),
+            "variants": out,
+        }
+        if len(variants) > len(capped):
+            result["note"] = (
+                f"Chỉ hiển thị {len(capped)}/{len(variants)} variant đầu tiên."
+            )
+        return result
 
     async def _prepare_order(self, items: list[dict]) -> dict:
         """Build a priced, stock-checked order draft. Read-only: reuses
