@@ -85,6 +85,45 @@ async def test_pricing_then_prepare_order_then_streamed_answer():
 
 
 @pytest.mark.asyncio
+async def test_status_emitted_per_tool_call_including_cache_hits():
+    """The UI's thinking indicator names the tool that is running, so every tool
+    call must surface a status — a cache hit is still a step the user is waiting
+    on. Here the repeated get_pricing yields a third status but only two
+    dispatcher executions."""
+    tc_price = [{"function": {"name": "get_pricing", "arguments": {"product_id": 12}}}]
+    tc_inv = [
+        {"function": {"name": "check_inventory", "arguments": {"variant_id": 45}}}
+    ]
+    llm = _FakeLLM(
+        [
+            ([], tc_price),
+            ([], tc_inv),
+            ([], tc_price),  # repeat -> cache hit
+            (["Còn hàng nhé."], None),
+        ]
+    )
+    disp = _Dispatcher(
+        {
+            "get_pricing": json.dumps({"productId": 12, "variants": []}),
+            "check_inventory": json.dumps([{"store": "HQ", "quantity": 3}]),
+        }
+    )
+    statuses, final = [], None
+    async for kind, val in _run_tool_loop_stream(llm, disp, []):
+        if kind == "status":
+            statuses.append(val)
+        elif kind == "final":
+            final = val
+    assert [s["tool"] for s in statuses] == [
+        "get_pricing",
+        "check_inventory",
+        "get_pricing",
+    ]
+    assert disp.calls == ["get_pricing", "check_inventory"]  # 3rd was cached
+    assert final[0] == "Còn hàng nhé."
+
+
+@pytest.mark.asyncio
 async def test_repeated_calls_force_final_buffered():
     tc = [{"function": {"name": "get_pricing", "arguments": {"product_id": 12}}}]
     llm = _FakeLLM([([], tc), ([], tc), ([], tc), ([], tc)])

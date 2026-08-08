@@ -8,39 +8,62 @@ env:
   IMAGE_NAME: goodminton-rag-service
 
 jobs:
-  build:
-    name: Build & Push Docker image
+  # Gate the deploy on the suite. ci.yml runs the same tests, but it is a
+  # separate workflow and a failure there would not stop this one — without
+  # this job a red build still ships to the VPS.
+  test:
+    name: Test (pytest)
     runs-on: ubuntu-latest
 
     steps:
-      - name: 📥 Checkout code
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: 🐳 Login Docker Hub
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+
+      - name: Sync dependencies
+        run: uv sync --frozen
+
+      - name: Run tests
+        run: uv run pytest -q
+
+  build:
+    name: Build & Push Docker image
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Login Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: 🏗 Build Docker image
+      - name: Build Docker image
         run: |
           docker build \
             -t ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest \
             -t ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
             .
 
-      - name: 📤 Push Docker image
+      - name: Push Docker image
         run: |
           docker push ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest
           docker push ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
 
   deploy:
-    name: 🚀 Deploy to VPS
+    name: Deploy to VPS
     needs: build
     runs-on: self-hosted
 
     steps:
-      - name: 🚀 Pull & restart container
+      - name: Pull & restart container
         run: |
           cd ~/projects/goodminton
           docker compose -f docker-compose.prod.yml pull rag-service
@@ -48,7 +71,7 @@ jobs:
           docker image prune -f
 
   reindex-static-docs:
-    name: 🔄 Re-index static docs
+    name: Re-index static docs
     needs: deploy
     runs-on: self-hosted
 

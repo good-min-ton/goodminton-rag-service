@@ -363,7 +363,7 @@ uv run python scripts/backfill_products.py     # rebuild layer B
 uv run ruff format . && uv run ruff check .    # format + lint (CI enforces both)
 ```
 
-The service expects reachable PostgreSQL (with pgvector and the `kb_chunks` table), Ollama (with both models pulled), RabbitMQ, and the Spring shop API. The simplest way to get all of them is the production compose file in the `goodminton-shop-api` repository.
+The service expects reachable PostgreSQL (with pgvector and the `kb_chunks` table), Ollama (with both models pulled), RabbitMQ, and the Spring shop API. The simplest way to get all of them is the production compose file in the `goodminton-infra` repository.
 
 ## 12. Deployment and CI/CD
 
