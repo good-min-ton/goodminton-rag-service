@@ -408,6 +408,10 @@ async def chat_stream(request: ChatRequest, http_request: Request):
                 ):
                     if kind == "token":
                         yield _sse("token", {"delta": val})
+                    elif kind == "status":
+                        # Progress signal for the UI's thinking indicator. Also
+                        # resets the client idle-timer, like a heartbeat.
+                        yield _sse("status", val)
                     elif kind == "heartbeat":
                         yield ":\n\n"  # SSE comment — resets the client idle-timer during silent tool turns
                     else:  # final
@@ -545,10 +549,10 @@ async def _run_tool_loop(
 
 async def _run_tool_loop_stream(llm, dispatcher, messages: list[dict]):
     """Streaming twin of _run_tool_loop. Async-generator: yields ("token", delta)
-    for the streamed terminal answer, then exactly one
-    ("final", (answer, tool_products, order_draft)). Reuses the exact tool-execution,
-    repeat-guard and parsing helpers; only the terminal text turn streams. The
-    forced-final (stuck) path is buffered (rare)."""
+    for the streamed terminal answer, ("status", {"tool": name}) before each tool
+    runs, then exactly one ("final", (answer, tool_products, order_draft)). Reuses
+    the exact tool-execution, repeat-guard and parsing helpers; only the terminal
+    text turn streams. The forced-final (stuck) path is buffered (rare)."""
     executed: dict[tuple[str, str], str] = {}
     tool_products: list[dict] = []
     order_draft: dict | None = None
@@ -576,6 +580,10 @@ async def _run_tool_loop_stream(llm, dispatcher, messages: list[dict]):
             fn = call.get("function", {})
             name = fn.get("name", "")
             arguments = fn.get("arguments") or {}
+            # Tell the client which tool is running so its loading indicator can
+            # name the actual step. Emitted for cache hits too — the UI shows
+            # progress, not cache mechanics.
+            yield ("status", {"tool": name})
             key = (name, json.dumps(arguments, sort_keys=True, default=str))
             if key in executed:
                 repeats += 1
