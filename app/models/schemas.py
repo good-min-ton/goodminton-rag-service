@@ -25,25 +25,6 @@ class SourceRef(BaseModel):
     source_id: str
 
 
-class OrderDraftItem(BaseModel):
-    product_id: str
-    variant_id: str
-    product_name: str
-    size: str | None = None
-    color: str | None = None
-    quantity: int
-    unit_price: float
-    line_total: float
-    in_stock: bool
-
-
-class OrderDraft(BaseModel):
-    items: list[OrderDraftItem] = Field(default_factory=list)
-    total: float = 0.0
-    currency: str = "VND"
-    warnings: list[str] = Field(default_factory=list)
-
-
 class BranchStock(BaseModel):
     """Stock at a non-central store. Walk-in only: an ONLINE order cannot draw on
     it, so this is advice ("it is in stock at Q7"), never a basis for ordering."""
@@ -93,9 +74,9 @@ class ChatResponse(BaseModel):
     sources: list[SourceRef]
     # Legacy prose-scraped ids; kept for back-compat. Cards now use display_products.
     products: list[str] = Field(default_factory=list)
-    order_draft: OrderDraft | None = None
-    # Set when the customer wants to buy but has not chosen a variant yet. The
-    # frontend renders it as a picker; the choosing itself costs no LLM turns.
+    # Set when the customer wants to buy. The frontend renders it as a picker and
+    # builds the priced draft itself once they choose, so the backend has no draft
+    # of its own to send.
     order_selection: OrderSelection | None = None
     # Foundation additions:
     intent: str | None = None

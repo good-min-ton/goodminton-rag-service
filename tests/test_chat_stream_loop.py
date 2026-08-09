@@ -47,48 +47,34 @@ async def _run(llm, dispatcher):
 
 
 @pytest.mark.asyncio
-async def test_availability_then_prepare_order_then_streamed_answer():
-    tc_price = [
+async def test_start_order_then_streamed_answer():
+    tc_order = [{"function": {"name": "start_order", "arguments": {"product_id": 12}}}]
+    selection = json.dumps(
         {
-            "function": {
-                "name": "get_product_availability",
-                "arguments": {"product_id": 12},
-            }
-        }
-    ]
-    tc_order = [
-        {
-            "function": {
-                "name": "prepare_order",
-                "arguments": {
-                    "items": [{"product_id": 12, "variant_id": 45, "quantity": 2}]
-                },
-            }
-        }
-    ]
-    draft = json.dumps(
-        {
-            "items": [{"product_id": "12", "variant_id": "45", "quantity": 2}],
-            "total": 6400000.0,
+            "product_id": "12",
+            "product_name": "Astrox 99",
             "currency": "VND",
-            "warnings": [],
+            "options": [
+                {
+                    "variant_id": "45",
+                    "size": "4U",
+                    "color": None,
+                    "unit_price": 3200000.0,
+                    "orderable": 4,
+                    "branches": [],
+                }
+            ],
         }
     )
-    llm = _FakeLLM(
-        [([], tc_price), ([], tc_order), (["Mời bạn ", "bấm XÁC NHẬN."], None)]
-    )
-    disp = _Dispatcher(
-        {
-            "get_product_availability": json.dumps({"productId": 12, "variants": []}),
-            "prepare_order": draft,
-        }
-    )
-    live, (answer, _tp, order_draft, _sel), heartbeats = await _run(llm, disp)
-    assert live == "Mời bạn bấm XÁC NHẬN."
-    assert answer == "Mời bạn bấm XÁC NHẬN."
-    assert order_draft is not None and order_draft["total"] == 6400000.0
-    assert disp.calls == ["get_product_availability", "prepare_order"]
-    assert heartbeats == 3  # one per loop turn: availability, prepare_order, answer
+    llm = _FakeLLM([([], tc_order), (["Mời bạn ", "chọn bên dưới."], None)])
+    disp = _Dispatcher({"start_order": selection})
+    live, (answer, _tp, order_selection), heartbeats = await _run(llm, disp)
+    assert live == "Mời bạn chọn bên dưới."
+    assert answer == "Mời bạn chọn bên dưới."
+    assert order_selection is not None
+    assert order_selection["options"][0]["orderable"] == 4
+    assert disp.calls == ["start_order"]
+    assert heartbeats == 2  # one per loop turn: start_order, answer
 
 
 @pytest.mark.asyncio
@@ -157,8 +143,8 @@ async def test_repeated_calls_force_final_buffered():
     disp = _Dispatcher(
         {"get_product_availability": json.dumps({"productId": 12, "variants": []})}
     )
-    live, (answer, _tp, order_draft, _sel), heartbeats = await _run(llm, disp)
-    assert order_draft is None
+    live, (answer, _tp, order_selection), heartbeats = await _run(llm, disp)
+    assert order_selection is None
     assert llm.forced == 1  # forced-final path
     assert answer == "Xin lỗi, mình chưa tạo được đơn, bạn thử lại nhé."
     assert disp.calls == ["get_product_availability"]  # repeats are cache hits
