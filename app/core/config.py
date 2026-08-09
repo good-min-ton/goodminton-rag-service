@@ -62,8 +62,13 @@ class Settings(BaseSettings):
     description_temperature: float = 0.5
     description_num_predict: int = 1536
 
-    # CORS — Phase 3 mở "*" cho test, Phase 6 sẽ restrict theo FRONTEND_URL
-    cors_origins: list[str] = ["*"]
+    # CORS. Comma-separated, e.g.
+    #   CORS_ORIGINS=https://goodminton.vercel.app,https://*.vercel.app
+    # A plain string rather than list[str]: pydantic-settings parses a list field
+    # from the environment as JSON, which makes for an awkward compose value.
+    # Default "*" keeps every origin allowed, which is what the public tunnel
+    # needs until the frontend has a settled domain.
+    cors_origins: str = "*"
 
     # RabbitMQ — Phase 4 consumer
     rabbitmq_url: str | None = None
@@ -98,6 +103,37 @@ class Settings(BaseSettings):
     # Calibrated from live data (matches ~0.09, unrelated ~0.31+). Tunable via env.
     image_search_max_distance: float = 0.30
     image_max_upload_bytes: int = 8 * 1024 * 1024  # 8 MB outer cap
+
+    @property
+    def cors_middleware_kwargs(self) -> dict:
+        """Origin arguments for Starlette's CORSMiddleware.
+
+        Entries may contain a `*` wildcard so Vercel preview deployments, whose
+        subdomain changes per branch, can be allowed without listing each one.
+        Starlette matches exact origins from a list and wildcards from a regex,
+        so wildcard entries are compiled into one. It uses `fullmatch`, so the
+        pattern cannot match a longer attacker-controlled origin.
+
+        `*` in the list means any origin; it wins over anything else present,
+        because a narrower entry alongside it would only look like a restriction.
+        """
+        import re
+
+        entries = [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+        if not entries or "*" in entries:
+            return {"allow_origins": ["*"]}
+
+        exact = [o for o in entries if "*" not in o]
+        wildcards = [o for o in entries if "*" in o]
+        if not wildcards:
+            return {"allow_origins": exact}
+        # `[^.]*` keeps a wildcard to a single label: https://*.vercel.app must
+        # not also match https://evil.attacker.vercel.app. Note shop-api reads
+        # the same style of value through Spring's origin patterns, which expand
+        # `*` to `.*` and so span any number of labels. This side is the stricter
+        # of the two; list exact origins when the difference matters.
+        pattern = "|".join(re.escape(o).replace(r"\*", r"[^.]*") for o in wildcards)
+        return {"allow_origins": exact, "allow_origin_regex": pattern}
 
     @property
     def resolved_database_url(self) -> str:

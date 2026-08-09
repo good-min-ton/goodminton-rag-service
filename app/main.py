@@ -105,9 +105,14 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
+    **settings.cors_middleware_kwargs,
+    # Deliberately false: auth is a bearer token the frontend attaches itself,
+    # not a cookie, so no credentialed request is ever made. Turning it on would
+    # also make the "*" default illegal - browsers reject that combination.
     allow_credentials=False,
     allow_methods=["*"],
+    # Must stay open: the frontend sends ngrok-skip-browser-warning to get past
+    # the tunnel's interstitial, and Authorization on shop-api calls.
     allow_headers=["*"],
 )
 
