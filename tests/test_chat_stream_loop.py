@@ -83,7 +83,7 @@ async def test_availability_then_prepare_order_then_streamed_answer():
             "prepare_order": draft,
         }
     )
-    live, (answer, _tp, order_draft), heartbeats = await _run(llm, disp)
+    live, (answer, _tp, order_draft, _sel), heartbeats = await _run(llm, disp)
     assert live == "Mời bạn bấm XÁC NHẬN."
     assert answer == "Mời bạn bấm XÁC NHẬN."
     assert order_draft is not None and order_draft["total"] == 6400000.0
@@ -157,7 +157,7 @@ async def test_repeated_calls_force_final_buffered():
     disp = _Dispatcher(
         {"get_product_availability": json.dumps({"productId": 12, "variants": []})}
     )
-    live, (answer, _tp, order_draft), heartbeats = await _run(llm, disp)
+    live, (answer, _tp, order_draft, _sel), heartbeats = await _run(llm, disp)
     assert order_draft is None
     assert llm.forced == 1  # forced-final path
     assert answer == "Xin lỗi, mình chưa tạo được đơn, bạn thử lại nhé."
