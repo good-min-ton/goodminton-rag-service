@@ -34,6 +34,19 @@ def test_prepare_order_is_described_as_the_fallback():
     assert "ĐƯỜNG LUI" in SYSTEM_PROMPT
 
 
+def test_prompt_forbids_markup_the_bubble_cannot_render():
+    """The bubble renders a deliberately small Markdown subset. Anything outside
+    it degrades to stripped text, which is how a customer asking to switch racket
+    versions got a bare "!Bảng chọn sản phẩm" under the answer: the model emitted
+    an image placeholder for the picker the app was already rendering."""
+    for keyword in (
+        "![mô tả](url)",
+        "KHÔNG tự vẽ hay mô tả giao diện",
+        "bảng chọn sản phẩm và thẻ sản phẩm do ứng dụng tự hiển thị",
+    ):
+        assert keyword in SYSTEM_PROMPT, keyword
+
+
 def test_system_prompt_still_formats_with_context():
     # No stray braces were introduced; .format still works.
     assert "seeded-context-marker" in SYSTEM_PROMPT.format(
