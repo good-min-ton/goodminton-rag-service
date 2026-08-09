@@ -94,6 +94,28 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "start_order",
+            "description": (
+                "Mở BẢNG CHỌN để khách tự bấm chọn size, màu và số lượng ngay trên "
+                "giao diện. GỌI NGAY khi khách muốn mua/đặt một sản phẩm — KHÔNG "
+                "cần hỏi size hay màu trước, bảng chọn đã hiển thị sẵn mọi lựa "
+                "chọn còn hàng. Sau khi gọi, chỉ cần mời khách chọn trên bảng."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "product_id": {
+                        "type": "integer",
+                        "description": "ID sản phẩm khách muốn mua.",
+                    }
+                },
+                "required": ["product_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "prepare_order",
             "description": (
                 "Tạo ĐƠN HÀNG NHÁP (chưa đặt) đã tính giá + kiểm tra tồn kho để khách xác "
@@ -147,6 +169,8 @@ class ToolDispatcher:
         try:
             if name == "get_product_availability":
                 result = await self._availability(int(arguments["product_id"]))
+            elif name == "start_order":
+                result = await self._start_order(int(arguments["product_id"]))
             elif name == "prepare_order":
                 result = await self._prepare_order(arguments.get("items") or [])
             elif name == "recommend_similar_products":
@@ -253,6 +277,56 @@ class ToolDispatcher:
                 f"Chỉ hiển thị {len(capped)}/{len(variants)} variant đầu tiên."
             )
         return result
+
+    async def _start_order(self, product_id: int) -> dict:
+        """Build the picker payload: every variant of one product, priced and
+        stock-checked, for the customer to choose from on the interface.
+
+        This exists to take variant selection away from the LLM. Asking "which
+        size?" in prose cost a generation per question and then required the
+        model to map a free-text reply back to a variant_id -- the step that
+        produced wrong-variant orders. Here the model only names the product.
+
+        Out-of-stock variants are kept, with orderable = 0. Dropping them would
+        tell the customer the size does not exist; the frontend greys them out
+        and can point at a branch that has one.
+        """
+        pricing = await self._client.get_pricing(product_id)
+        variants = (pricing.get("variants") or [])[:MAX_VARIANTS_PER_LOOKUP]
+
+        stocks = await asyncio.gather(
+            *(self._client.check_inventory(int(v["variantId"])) for v in variants)
+        )
+
+        options: list[dict] = []
+        for variant, rows in zip(variants, stocks, strict=True):
+            stock = _split_stock(rows)
+            sale = variant.get("salePrice")
+            unit_price = float(sale if sale is not None else variant.get("price") or 0)
+            options.append(
+                {
+                    "variant_id": str(variant.get("variantId")),
+                    "size": variant.get("sizeName"),
+                    "color": variant.get("colorName"),
+                    "unit_price": unit_price,
+                    "orderable": stock["orderable"],
+                    "branches": [
+                        {
+                            "store_id": b.get("storeId"),
+                            "store_name": b.get("storeName"),
+                            "quantity": b["quantity"],
+                        }
+                        for b in stock["branches"]
+                    ],
+                }
+            )
+
+        return {
+            "product_id": str(pricing.get("productId") or product_id),
+            "product_name": pricing.get("productName") or "",
+            "currency": "VND",
+            "options": options,
+        }
 
     async def _prepare_order(self, items: list[dict]) -> dict:
         """Build a priced, stock-checked order draft. Read-only: reuses

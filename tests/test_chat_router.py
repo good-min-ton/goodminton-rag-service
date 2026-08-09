@@ -130,7 +130,7 @@ async def test_run_tool_loop_pricing_then_prepare_order_yields_draft():
         }
     )
 
-    answer, tool_products, order_draft = await _run_tool_loop(llm, dispatcher, [])
+    answer, tool_products, order_draft, _sel = await _run_tool_loop(llm, dispatcher, [])
 
     assert order_draft is not None
     assert order_draft["items"][0]["variant_id"] == "45"
@@ -169,7 +169,7 @@ async def test_run_tool_loop_repeated_calls_force_final_without_draft():
         }
     )
 
-    answer, tool_products, order_draft = await _run_tool_loop(llm, dispatcher, [])
+    answer, tool_products, order_draft, _sel = await _run_tool_loop(llm, dispatcher, [])
 
     assert order_draft is None  # no prepare_order -> no draft
     assert llm.chat.await_count == 1  # forced-final path was taken
@@ -202,7 +202,7 @@ async def test_tool_loop_recovers_tool_call_from_content():
     dispatcher = _Dispatcher(
         {"get_product_availability": json.dumps({"productId": 12, "variants": []})}
     )
-    answer, _, _ = await _run_tool_loop(llm, dispatcher, [])
+    answer, _, _, _ = await _run_tool_loop(llm, dispatcher, [])
     assert answer == "Vợt Astrox 12 giá 1.200.000đ ạ."
     assert dispatcher.calls == [
         "get_product_availability"
@@ -220,5 +220,5 @@ async def test_tool_loop_sanitizes_unrecoverable_json_content():
         "tool_calls": [],
     }
     dispatcher = _Dispatcher({})
-    answer, _, _ = await _run_tool_loop(llm, dispatcher, [])
+    answer, _, _, _ = await _run_tool_loop(llm, dispatcher, [])
     assert answer == SANITIZE_FALLBACK

@@ -44,12 +44,59 @@ class OrderDraft(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class BranchStock(BaseModel):
+    """Stock at a non-central store. Walk-in only: an ONLINE order cannot draw on
+    it, so this is advice ("it is in stock at Q7"), never a basis for ordering."""
+
+    store_id: int | None = None
+    store_name: str | None = None
+    quantity: int
+
+
+class OrderOption(BaseModel):
+    """One orderable variant, priced and stock-checked, ready to be a chip in the
+    frontend's picker. `unit_price` already applies sale-price precedence so the
+    UI never has to repeat that rule."""
+
+    variant_id: str
+    size: str | None = None
+    color: str | None = None
+    unit_price: float
+    # Central-store quantity: the picker caps the quantity stepper at this, so a
+    # customer cannot assemble an order the checkout would reject.
+    orderable: int
+    branches: list[BranchStock] = Field(default_factory=list)
+
+
+class OrderSelection(BaseModel):
+    """Everything the frontend needs to let a customer pick a variant without
+    another LLM turn.
+
+    The model used to ask for size and colour in prose and then map the reply
+    back to a variant_id itself, which is both slow (a generation per question)
+    and unreliable. Here it names the product once; picking is deterministic.
+
+    Options are a list, not a size x colour matrix: `UNIQUE (product_id,
+    color_id, size_id)` does not guarantee every combination exists, and both
+    columns are nullable, so the frontend derives the chips it can offer from
+    the variants that actually exist.
+    """
+
+    product_id: str
+    product_name: str
+    currency: str = "VND"
+    options: list[OrderOption] = Field(default_factory=list)
+
+
 class ChatResponse(BaseModel):
     answer: str
     sources: list[SourceRef]
     # Legacy prose-scraped ids; kept for back-compat. Cards now use display_products.
     products: list[str] = Field(default_factory=list)
     order_draft: OrderDraft | None = None
+    # Set when the customer wants to buy but has not chosen a variant yet. The
+    # frontend renders it as a picker; the choosing itself costs no LLM turns.
+    order_selection: OrderSelection | None = None
     # Foundation additions:
     intent: str | None = None
     categories: list[str] = Field(default_factory=list)

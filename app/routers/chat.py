@@ -310,7 +310,7 @@ async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
             just_placed,
         ) = await _prepare_chat_pipeline(http_request, request, query)
 
-        answer, tool_products, order_draft = await _run_tool_loop(
+        answer, tool_products, order_draft, order_selection = await _run_tool_loop(
             llm_svc, tool_dispatcher, messages
         )
 
@@ -331,6 +331,7 @@ async def chat(request: ChatRequest, http_request: Request) -> ChatResponse:
             sources=_unique_sources(chunks),
             products=[str(i) for i in display],  # legacy mirror
             order_draft=order_draft,
+            order_selection=order_selection,
             intent=qu.intent,
             categories=qu.categories,
             display_products=display,
@@ -402,7 +403,7 @@ async def chat_stream(request: ChatRequest, http_request: Request):
                         "categories": qu.categories,
                     },
                 )
-                answer, tool_products, order_draft = "", [], None
+                answer, tool_products, order_draft, order_selection = "", [], None, None
                 async for kind, val in _run_tool_loop_stream(
                     llm_svc, tool_dispatcher, messages
                 ):
@@ -415,7 +416,7 @@ async def chat_stream(request: ChatRequest, http_request: Request):
                     elif kind == "heartbeat":
                         yield ":\n\n"  # SSE comment — resets the client idle-timer during silent tool turns
                     else:  # final
-                        answer, tool_products, order_draft = val
+                        answer, tool_products, order_draft, order_selection = val
                 display = await _finalize_chat(
                     http_request,
                     request,
@@ -432,6 +433,7 @@ async def chat_stream(request: ChatRequest, http_request: Request):
                     {
                         "answer": answer,
                         "order_draft": order_draft,
+                        "order_selection": order_selection,
                         "display_products": display,
                         "products": [str(i) for i in display],
                         "sources": sources,
@@ -460,6 +462,7 @@ async def _run_tool_loop(
     executed: dict[tuple[str, str], str] = {}
     tool_products: list[dict] = []
     order_draft: dict | None = None
+    order_selection: dict | None = None
     repeats = 0
     for iteration in range(MAX_TOOL_ITERATIONS):
         with langfuse.start_as_current_observation(
@@ -482,7 +485,12 @@ async def _run_tool_loop(
             content = msg.get("content") or ""
             recovered = _recover_tool_call(content, _TOOL_NAMES)
             if recovered is None:
-                return _sanitize_answer(content), tool_products, order_draft
+                return (
+                    _sanitize_answer(content),
+                    tool_products,
+                    order_draft,
+                    order_selection,
+                )
             # 3B emitted the call as text — honor it: synthesize a structured call
             # and fall through to the normal execution block below.
             tool_calls = [{"function": recovered}]
@@ -513,6 +521,10 @@ async def _run_tool_loop(
                     parsed = _parse_order_draft(result)
                     if parsed is not None:
                         order_draft = parsed  # last successful prepare_order wins
+                elif name == "start_order":
+                    parsed = _parse_order_selection(result)
+                    if parsed is not None:
+                        order_selection = parsed  # last successful pick wins
             messages.append({"role": "tool", "name": name, "content": result})
 
         if repeats >= MAX_REPEATED_CALLS:
@@ -537,25 +549,33 @@ async def _run_tool_loop(
             ) as gen:
                 final = await llm.chat(messages)
                 gen.update(output=final)
-            return _sanitize_answer(final), tool_products, order_draft
+            return (
+                _sanitize_answer(final),
+                tool_products,
+                order_draft,
+                order_selection,
+            )
 
     log.warning("Tool loop hit max iterations (%d)", MAX_TOOL_ITERATIONS)
     return (
         "Xin lỗi, mình không xử lý được yêu cầu này. Vui lòng liên hệ shop.",
         tool_products,
         order_draft,
+        order_selection,
     )
 
 
 async def _run_tool_loop_stream(llm, dispatcher, messages: list[dict]):
     """Streaming twin of _run_tool_loop. Async-generator: yields ("token", delta)
     for the streamed terminal answer, ("status", {"tool": name}) before each tool
-    runs, then exactly one ("final", (answer, tool_products, order_draft)). Reuses
+    runs, then exactly one
+    ("final", (answer, tool_products, order_draft, order_selection)). Reuses
     the exact tool-execution, repeat-guard and parsing helpers; only the terminal
     text turn streams. The forced-final (stuck) path is buffered (rare)."""
     executed: dict[tuple[str, str], str] = {}
     tool_products: list[dict] = []
     order_draft: dict | None = None
+    order_selection: dict | None = None
     repeats = 0
     for _ in range(MAX_TOOL_ITERATIONS):
         # Heartbeat before each turn's generation: a tool turn emits 0 tokens for
@@ -572,7 +592,7 @@ async def _run_tool_loop_stream(llm, dispatcher, messages: list[dict]):
                 result = val  # ("tool", tool_calls) | ("answer", text)
         rkind, rval = result
         if rkind == "answer":
-            yield ("final", (rval, tool_products, order_draft))
+            yield ("final", (rval, tool_products, order_draft, order_selection))
             return
         tool_calls = rval
         messages.append({"role": "assistant", "content": "", "tool_calls": tool_calls})
@@ -597,6 +617,10 @@ async def _run_tool_loop_stream(llm, dispatcher, messages: list[dict]):
                     parsed = _parse_order_draft(res)
                     if parsed is not None:
                         order_draft = parsed
+                elif name == "start_order":
+                    parsed = _parse_order_selection(res)
+                    if parsed is not None:
+                        order_selection = parsed
             messages.append({"role": "tool", "name": name, "content": res})
         if repeats >= MAX_REPEATED_CALLS:
             messages.append(
@@ -612,7 +636,10 @@ async def _run_tool_loop_stream(llm, dispatcher, messages: list[dict]):
                 }
             )
             final = await llm.chat(messages)
-            yield ("final", (_sanitize_answer(final), tool_products, order_draft))
+            yield (
+                "final",
+                (_sanitize_answer(final), tool_products, order_draft, order_selection),
+            )
             return
     yield (
         "final",
@@ -620,6 +647,7 @@ async def _run_tool_loop_stream(llm, dispatcher, messages: list[dict]):
             "Xin lỗi, mình không xử lý được yêu cầu này. Vui lòng liên hệ shop.",
             tool_products,
             order_draft,
+            order_selection,
         ),
     )
 
@@ -731,6 +759,24 @@ def _parse_order_draft(result: str) -> dict | None:
     except (ValueError, TypeError):
         return None
     if not isinstance(data, dict) or "items" not in data or "error" in data:
+        return None
+    return data
+
+
+def _parse_order_selection(result: str) -> dict | None:
+    """Parse a start_order tool result into an order_selection dict, or None.
+
+    A selection with no options is dropped rather than forwarded: the frontend
+    would render a picker with nothing to pick, which reads as a broken card. The
+    model's own text ("shop chua co san pham nay") is the better answer there.
+    """
+    try:
+        data = json.loads(result)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(data, dict) or "error" in data:
+        return None
+    if not data.get("options"):
         return None
     return data
 
