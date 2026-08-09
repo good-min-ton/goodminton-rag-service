@@ -26,12 +26,11 @@ def test_system_prompt_has_ordering_rules():
         assert keyword in SYSTEM_PROMPT, keyword
 
 
-def test_prepare_order_is_described_as_the_fallback():
-    """It stays available for a customer who states size, colour and quantity
-    outright, but the picker is the default: a chosen variant cannot be the
-    wrong one."""
-    assert "prepare_order(items)" in SYSTEM_PROMPT
-    assert "ĐƯỜNG LUI" in SYSTEM_PROMPT
+def test_prompt_offers_no_way_to_order_without_the_picker():
+    """The model has no path to a variant_id any more: prepare_order is gone and
+    the prompt must not describe one, or a stuck model will invent it."""
+    assert "prepare_order" not in SYSTEM_PROMPT
+    assert "variant_id" not in SYSTEM_PROMPT
 
 
 def test_system_prompt_still_formats_with_context():

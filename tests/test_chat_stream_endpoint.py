@@ -29,7 +29,6 @@ def test_stream_events_cover_all_chat_response_fields():
     meta_keys = {"sources", "intent", "categories"}
     done_keys = {
         "answer",
-        "order_draft",
         "order_selection",
         "display_products",
         "products",

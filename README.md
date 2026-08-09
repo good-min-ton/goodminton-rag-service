@@ -137,11 +137,16 @@ Steps in detail:
 
 ## 4. Tool Calling: Real-Time Price and Stock
 
-One tool answers both halves of the question. The dispatcher maps it to Spring's internal endpoints, which are protected by a shared `X-Internal-Key` header and are only reachable inside the Docker network.
+Two tools reach Spring's internal endpoints, which are protected by a shared `X-Internal-Key` header and are only reachable inside the Docker network.
 
 | Tool | Spring endpoints | Returns |
 |---|---|---|
-| `get_product_availability(product_id)` | `GET /api/internal/products/{id}/pricing`, then `GET /api/internal/variants/{id}/inventory` per variant | Every variant with color, size, SKU, price, sale price, `totalStock` and the branches holding stock |
+| `get_product_availability(product_id)` | `GET /api/internal/products/{id}/pricing`, then `GET /api/internal/variants/{id}/inventory` per variant | Every variant with color, size, SKU, price, sale price, `orderable` (central-store stock) and the `branches` holding stock |
+| `start_order(product_id)` | the same two, when the customer wants to buy | The same variants shaped as picker options, which the frontend renders as chips |
+
+`orderable` and `branches` are deliberately separate. An ONLINE order is fulfilled from the central store (`OrderServiceImpl.createOnlineOrder` deducts from `findCentralStore()`), so only `orderable` decides whether an order can be placed; stock at a branch is walk-in and can only be mentioned. The central store is identified by the `isCentral` flag shop-api sends on each inventory row, never by name.
+
+Ordering itself is not a tool loop. `start_order` puts a picker on screen and the model stops there: the customer taps size, colour and quantity, and the frontend builds the priced draft locally. The model never handles a `variant_id`, which is what used to make it order the wrong one.
 
 ```mermaid
 sequenceDiagram

@@ -7,7 +7,7 @@ from app.routers.chat import (
 _TOOLS = {
     "get_product_availability",
     "recommend_similar_products",
-    "prepare_order",
+    "start_order",
 }
 
 

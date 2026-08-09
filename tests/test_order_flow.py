@@ -16,7 +16,7 @@ def _qu(categories=None):
 def test_browsing_plus_draft_enters_waiting():
     assert (
         next_order_status(
-            BROWSING, _qu(), order_draft_emitted=True, order_just_placed=False
+            BROWSING, _qu(), order_card_emitted=True, order_just_placed=False
         )
         == WAITING_CONFIRMATION
     )
@@ -27,7 +27,7 @@ def test_waiting_plus_placed_id_confirms():
         next_order_status(
             WAITING_CONFIRMATION,
             _qu(),
-            order_draft_emitted=False,
+            order_card_emitted=False,
             order_just_placed=True,
         )
         == ORDER_CONFIRMED
@@ -39,7 +39,7 @@ def test_waiting_plus_new_category_resets_to_browsing():
         next_order_status(
             WAITING_CONFIRMATION,
             _qu(["Áo cầu lông"]),
-            order_draft_emitted=False,
+            order_card_emitted=False,
             order_just_placed=False,
         )
         == BROWSING
@@ -51,7 +51,7 @@ def test_confirmed_plus_new_category_resets_to_browsing():
         next_order_status(
             ORDER_CONFIRMED,
             _qu(["Giày cầu lông"]),
-            order_draft_emitted=False,
+            order_card_emitted=False,
             order_just_placed=False,
         )
         == BROWSING
@@ -64,7 +64,7 @@ def test_new_category_while_already_browsing_stays_browsing():
         next_order_status(
             BROWSING,
             _qu(["Quần cầu lông"]),
-            order_draft_emitted=False,
+            order_card_emitted=False,
             order_just_placed=False,
         )
         == BROWSING
@@ -75,7 +75,7 @@ def test_draft_outranks_stale_placed_id():
     # new order started after a prior placement (stale id resent) -> WAITING, not CONFIRMED
     assert (
         next_order_status(
-            ORDER_CONFIRMED, _qu(), order_draft_emitted=True, order_just_placed=True
+            ORDER_CONFIRMED, _qu(), order_card_emitted=True, order_just_placed=True
         )
         == WAITING_CONFIRMATION
     )
@@ -86,7 +86,7 @@ def test_waiting_no_signal_stays_waiting():
         next_order_status(
             WAITING_CONFIRMATION,
             _qu(),
-            order_draft_emitted=False,
+            order_card_emitted=False,
             order_just_placed=False,
         )
         == WAITING_CONFIRMATION
@@ -96,7 +96,7 @@ def test_waiting_no_signal_stays_waiting():
 def test_none_current_defaults_browsing():
     assert (
         next_order_status(
-            None, _qu(), order_draft_emitted=False, order_just_placed=False
+            None, _qu(), order_card_emitted=False, order_just_placed=False
         )
         == BROWSING
     )
@@ -110,19 +110,24 @@ def test_suppression_flags():
 
 
 def test_directive_text():
-    assert "xác nhận" in order_directive(WAITING_CONFIRMATION).lower()
+    # While a card is open the bot must not restart the sales pitch, and must not
+    # ask for size/colour in prose - that is what the picker is for.
+    waiting = order_directive(WAITING_CONFIRMATION).lower()
+    assert "bảng chọn" in waiting
+    assert "không gợi ý sản phẩm mới" in waiting
+    assert "không hỏi size" in waiting
     assert order_directive(BROWSING) == ""
     assert "đặt" in order_directive(ORDER_CONFIRMED).lower()
 
 
-def test_draft_outranks_new_category_same_turn():
-    # From a non-BROWSING state, a turn that BOTH names a category AND emits a
-    # draft is an active order -> WAITING (suppress), not BROWSING (leak).
+def test_order_card_outranks_new_category_same_turn():
+    # From a non-BROWSING state, a turn that BOTH names a category AND opens an
+    # order card is an active order -> WAITING (suppress), not BROWSING (leak).
     assert (
         next_order_status(
             WAITING_CONFIRMATION,
             _qu(["Áo cầu lông"]),
-            order_draft_emitted=True,
+            order_card_emitted=True,
             order_just_placed=False,
         )
         == WAITING_CONFIRMATION
@@ -136,7 +141,7 @@ def test_resent_placement_does_not_block_new_browse():
         next_order_status(
             ORDER_CONFIRMED,
             _qu(["Vợt cầu lông"]),
-            order_draft_emitted=False,
+            order_card_emitted=False,
             order_just_placed=False,
         )
         == BROWSING
