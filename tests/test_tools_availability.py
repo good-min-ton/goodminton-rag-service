@@ -19,6 +19,16 @@ def _variant(variant_id: int, size: str) -> dict:
     }
 
 
+def _row(store_id: int, name: str, quantity: int, *, central: bool = False) -> dict:
+    """One inventory row as shop-api sends it, isCentral included."""
+    return {
+        "storeId": store_id,
+        "storeName": name,
+        "isCentral": central,
+        "quantity": quantity,
+    }
+
+
 def _dispatcher(pricing: dict, inventory_by_variant: dict[int, list]):
     client = MagicMock()
     client.get_pricing = AsyncMock(return_value=pricing)
@@ -46,8 +56,8 @@ async def test_returns_price_and_stock_for_every_variant_in_one_call():
             "variants": [_variant(45, "4U"), _variant(46, "3U")],
         },
         {
-            45: [{"storeId": 1, "storeName": "HQ", "quantity": 7}],
-            46: [{"storeId": 1, "storeName": "HQ", "quantity": 2}],
+            45: [_row(1, "HQ", 7, central=True)],
+            46: [_row(1, "HQ", 2, central=True)],
         },
     )
 
@@ -59,44 +69,47 @@ async def test_returns_price_and_stock_for_every_variant_in_one_call():
     # Pricing fields survive untouched alongside the new stock fields.
     assert out["variants"][0]["salePrice"] == 2689000
     assert out["variants"][0]["sizeName"] == "4U"
-    assert out["variants"][0]["totalStock"] == 7
-    assert out["variants"][1]["totalStock"] == 2
+    assert out["variants"][0]["orderable"] == 7
+    assert out["variants"][1]["orderable"] == 2
     assert client.get_pricing.await_count == 1
     assert client.check_inventory.await_count == 2
 
 
 @pytest.mark.asyncio
-async def test_sums_stock_across_stores_and_drops_empty_ones():
-    """`stores` is what the model reads to answer "which branch has it", so a
-    branch holding nothing is noise in an already context-tight prompt."""
+async def test_separates_orderable_stock_from_walk_in_branches():
+    """An ONLINE order is fulfilled from the central store only, so the two
+    numbers must never be added together: reporting a cross-store total as
+    available would have the bot promise stock checkout cannot draw on. Branches
+    holding nothing are dropped -- noise in an already context-tight prompt."""
     dispatcher, _ = _dispatcher(
         {"productId": 12, "productName": "P", "variants": [_variant(45, "4U")]},
         {
             45: [
-                {"storeId": 1, "storeName": "HQ", "quantity": 3},
-                {"storeId": 2, "storeName": "Q1", "quantity": 0},
-                {"storeId": 3, "storeName": "Q7", "quantity": 5},
+                _row(1, "HQ", 3, central=True),
+                _row(2, "Q1", 0),
+                _row(3, "Q7", 5),
             ]
         },
     )
 
     variant = (await _run(dispatcher))["variants"][0]
 
-    assert variant["totalStock"] == 8
-    assert [s["storeName"] for s in variant["stores"]] == ["HQ", "Q7"]
+    assert variant["orderable"] == 3  # central only, NOT 3 + 5
+    assert [b["storeName"] for b in variant["branches"]] == ["Q7"]
+    assert variant["branches"][0]["quantity"] == 5
 
 
 @pytest.mark.asyncio
 async def test_out_of_stock_variant_reports_zero_and_no_stores():
     dispatcher, _ = _dispatcher(
         {"productId": 12, "productName": "P", "variants": [_variant(45, "4U")]},
-        {45: [{"storeId": 1, "storeName": "HQ", "quantity": 0}]},
+        {45: [_row(1, "HQ", 0, central=True)]},
     )
 
     variant = (await _run(dispatcher))["variants"][0]
 
-    assert variant["totalStock"] == 0
-    assert variant["stores"] == []
+    assert variant["orderable"] == 0
+    assert variant["branches"] == []
 
 
 @pytest.mark.asyncio
@@ -110,8 +123,8 @@ async def test_variant_with_no_inventory_rows_is_out_of_stock():
 
     variant = (await _run(dispatcher))["variants"][0]
 
-    assert variant["totalStock"] == 0
-    assert variant["stores"] == []
+    assert variant["orderable"] == 0
+    assert variant["branches"] == []
 
 
 @pytest.mark.asyncio
@@ -138,10 +151,7 @@ async def test_variant_count_is_capped_and_the_cap_is_reported():
             "productName": "P",
             "variants": [_variant(100 + i, f"S{i}") for i in range(total)],
         },
-        {
-            100 + i: [{"storeId": 1, "storeName": "HQ", "quantity": 1}]
-            for i in range(total)
-        },
+        {100 + i: [_row(1, "HQ", 1, central=True)] for i in range(total)},
     )
 
     out = await _run(dispatcher)
@@ -162,7 +172,7 @@ async def test_inventory_reads_run_concurrently():
         order.append(f"enter:{variant_id}")
         await asyncio.sleep(0)  # yield to the loop
         order.append(f"exit:{variant_id}")
-        return [{"storeId": 1, "storeName": "HQ", "quantity": 1}]
+        return [_row(1, "HQ", 1, central=True)]
 
     client = MagicMock()
     client.get_pricing = AsyncMock(

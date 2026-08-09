@@ -1,18 +1,11 @@
 import json
 from unittest.mock import AsyncMock
 
-import pytest
 
-from app.core.config import settings
 from app.models.schemas import ChatResponse, OrderDraft, OrderDraftItem
 from app.services.tools import TOOL_SCHEMAS, ToolDispatcher
 
 CENTRAL = "Central Test Store"
-
-
-@pytest.fixture(autouse=True)
-def _central_store(monkeypatch):
-    monkeypatch.setattr(settings, "central_store_name", CENTRAL)
 
 
 def _pricing(variants, product_id=12, product_name="Vợt Yonex Astrox 100ZZ"):
@@ -30,8 +23,12 @@ def _variant(variant_id=45, color="Đỏ", size="4U", price=3200000.0, sale=None
     }
 
 
-def _inv(qty, store=CENTRAL):
-    return [{"storeId": 1, "storeName": store, "quantity": qty}]
+def _inv(qty, store=CENTRAL, is_central=True):
+    """One inventory row. The central store is identified by the isCentral flag
+    shop-api sends, not by matching its name against config."""
+    return [
+        {"storeId": 1, "storeName": store, "isCentral": is_central, "quantity": qty}
+    ]
 
 
 def _dispatcher(pricing_return, inventory_return):
@@ -112,8 +109,12 @@ async def test_prepare_order_out_of_stock_warns_keeps_line():
 
 
 async def test_prepare_order_no_central_row_treats_as_zero():
+    """Stock sitting only at a branch is walk-in stock: an ONLINE order is
+    fulfilled from the central store, so 50 units elsewhere are still zero here.
+    Failing toward out-of-stock also keeps a missing row from reading as
+    "unknown, assume fine"."""
     client, dispatcher = _dispatcher(
-        _pricing([_variant()]), _inv(50, store="Some Other Store")
+        _pricing([_variant()]), _inv(50, store="Chi nhanh Q7", is_central=False)
     )
     out = await dispatcher.execute(
         "prepare_order",
@@ -122,6 +123,23 @@ async def test_prepare_order_no_central_row_treats_as_zero():
     draft = json.loads(out)
     assert draft["items"][0]["in_stock"] is False
     assert len(draft["warnings"]) == 1
+
+
+async def test_prepare_order_ignores_the_store_name():
+    """The central store used to be matched by name against config, so renaming
+    it in the admin panel silently made every line read out of stock. Identity
+    now comes from the flag shop-api sends."""
+    client, dispatcher = _dispatcher(
+        _pricing([_variant()]),
+        _inv(10, store="Ten Kho Vua Doi", is_central=True),
+    )
+    out = await dispatcher.execute(
+        "prepare_order",
+        {"items": [{"product_id": 12, "variant_id": 45, "quantity": 2}]},
+    )
+    draft = json.loads(out)
+    assert draft["items"][0]["in_stock"] is True
+    assert draft["warnings"] == []
 
 
 async def test_prepare_order_variant_not_found_drops_line_no_inventory_call():

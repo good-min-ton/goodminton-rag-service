@@ -83,8 +83,11 @@ class Settings(BaseSettings):
     # Shop API internal endpoint
     shop_api_url: str = "http://shop-api:8080"
     internal_api_key: str | None = None
-    # Central store whose inventory row prepare_order reads (env: CENTRAL_STORE_NAME)
-    central_store_name: str = "Goodminton HQ - Di An"  # Store.name where is_central=true (verified 2026-07-26)
+    # No central-store setting on purpose: shop-api flags the central store on
+    # every inventory row it returns, which is the same source of truth its own
+    # checkout uses. A name kept in config here had to be updated by hand
+    # whenever a store was renamed or promoted, and drifting silently meant
+    # every variant read as out of stock.
 
     # Image search — embed-service (SigLIP, port 8001) + pgvector
     embed_service_url: str = "http://localhost:8001"

@@ -18,6 +18,35 @@ log = logging.getLogger(__name__)
 MAX_VARIANTS_PER_LOOKUP = 20
 
 
+def _split_stock(rows: list[dict]) -> dict:
+    """Split one variant's inventory rows into orderable vs walk-in stock.
+
+    The central store is identified by the `isCentral` flag shop-api sends on
+    each row -- the same source of truth its own checkout uses. This used to be a
+    store-NAME comparison against a config value, which an ordinary rename or a
+    central-store promotion silently broke: every variant then read as zero
+    orderable stock, which surfaced as an order card whose button never enabled.
+
+    No central row at all means zero orderable, never "unknown": failing toward
+    out-of-stock keeps the bot from promising what checkout cannot deliver.
+    """
+    orderable = 0
+    branches: list[dict] = []
+    for row in rows:
+        quantity = row.get("quantity") or 0
+        if row.get("isCentral"):
+            orderable = quantity
+        elif quantity > 0:
+            branches.append(
+                {
+                    "storeId": row.get("storeId"),
+                    "storeName": row.get("storeName"),
+                    "quantity": quantity,
+                }
+            )
+    return {"orderable": orderable, "branches": branches}
+
+
 TOOL_SCHEMAS = [
     {
         "type": "function",
@@ -179,7 +208,7 @@ class ToolDispatcher:
             )
 
     async def _availability(self, product_id: int) -> dict:
-        """Pricing plus per-store stock for every variant, in one tool call.
+        """Pricing plus stock for every variant, in one tool call.
 
         Replaces the old get_pricing -> check_inventory pair. The model had to
         call the first to discover variant ids before it could call the second,
@@ -188,8 +217,15 @@ class ToolDispatcher:
         trades that turn for N internal HTTP calls on the Docker network, which
         are orders of magnitude cheaper and run concurrently.
 
-        Stores with zero quantity are dropped: the model only needs to know where
-        stock exists, and the prompt they land in is already context-tight.
+        Stock is split in two, because the two halves mean different things:
+
+        - `orderable` is the central store's quantity. An ONLINE order is always
+          fulfilled from there (shop-api's createOnlineOrder deducts from
+          findCentralStore), so this is the only number that decides whether an
+          order can be placed. Reporting a cross-store total here would have the
+          bot promise stock the checkout cannot draw on.
+        - `branches` lists the other stores holding stock. Walk-in only, so it is
+          advice ("it is in stock at Q7"), never a basis for ordering.
         """
         pricing = await self._client.get_pricing(product_id)
         variants = pricing.get("variants") or []
@@ -205,18 +241,7 @@ class ToolDispatcher:
 
         out: list[dict] = []
         for variant, rows in zip(capped, stocks, strict=True):
-            in_stock = [
-                {"storeName": r.get("storeName"), "quantity": r.get("quantity") or 0}
-                for r in rows
-                if (r.get("quantity") or 0) > 0
-            ]
-            out.append(
-                {
-                    **variant,
-                    "totalStock": sum(r["quantity"] for r in in_stock),
-                    "stores": in_stock,
-                }
-            )
+            out.append({**variant, **_split_stock(rows)})
 
         result = {
             "productId": pricing.get("productId"),
@@ -278,14 +303,7 @@ class ToolDispatcher:
             size = variant.get("sizeName")
 
             inventory = await self._client.check_inventory(variant_id)
-            central_qty = next(
-                (
-                    row.get("quantity", 0)
-                    for row in inventory
-                    if row.get("storeName") == settings.central_store_name
-                ),
-                0,  # no central row -> fail toward out-of-stock, never fail-open
-            )
+            central_qty = _split_stock(inventory)["orderable"]
             in_stock = central_qty >= quantity
             if not in_stock:
                 label = " ".join(x for x in (color, size) if x)
