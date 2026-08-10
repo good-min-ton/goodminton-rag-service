@@ -30,6 +30,31 @@ jobs:
   test:
     name: Test (pytest)
     runs-on: ubuntu-latest
+
+    # Without this the DB-backed tests self-skip, and 23 of them did - including
+    # every test of the category filter that retrieval depends on. They were
+    # written correctly and simply never ran.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg15
+        env:
+          POSTGRES_DB: goodminton
+          POSTGRES_USER: admin
+          POSTGRES_PASSWORD: postgresql123
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U admin -d goodminton"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      # tests/conftest.py creates the vector extension and the kb_chunks schema
+      # itself, mirroring shop-api's V7 migration, so an empty pgvector database
+      # is all this needs.
+      DATABASE_URL: postgresql://admin:postgresql123@localhost:5432/goodminton
+
     steps:
       - uses: actions/checkout@v4
 
@@ -41,10 +66,17 @@ jobs:
       - name: Sync dependencies
         run: uv sync --frozen
 
-      # DB-backed tests self-skip when DATABASE_URL is unset, so no service
-      # container is needed here.
       - name: Run tests
-        run: uv run pytest -q
+        run: |
+          set -o pipefail
+          uv run pytest -q | tee /tmp/pytest.out
+          # A skip means the database was unreachable and the suite quietly
+          # tested less than it appears to - green, but hollow. That is the exact
+          # failure this job exists to prevent, so treat it as one.
+          if grep -q "skipped" /tmp/pytest.out; then
+            echo "::error::Tests were skipped - DATABASE_URL is not reaching the service container"
+            exit 1
+          fi
 
   build:
     name: Build Docker image
