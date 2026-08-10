@@ -77,7 +77,8 @@ class Settings(BaseSettings):
     rabbitmq_user: str | None = None
     rabbitmq_password: str | None = None
 
-    products_exchange: str = "goodminton.products"
+    # Tên exchange cố ý không có ở đây: chỉ phía publish mới cần biết, mà phía
+    # publish là shop-api. Consumer chỉ cần tên hàng đợi đã được bind sẵn.
     rag_product_queue: str = "rag.product.sync"
     rag_product_dlq: str = "rag.product.sync.dlq"
 
