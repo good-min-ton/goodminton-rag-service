@@ -74,7 +74,11 @@ PRICE_TEMPLATES = [
     "{cat} giá mềm dưới {muc}",
 ]
 
-# Persona đa dạng để câu hỏi attribute không rập khuôn một giọng.
+# Prompt của attribute chỉ phụ thuộc (danh mục, brief) - KHÔNG phụ thuộc sản
+# phẩm, vì nêu đặc điểm riêng của sản phẩm sẽ làm lộ danh tính. Ở nhiệt độ 0,
+# cùng cặp thì cùng câu, nên SỐ CÂU KHÁC NHAU TỐI ĐA = số danh mục x số brief.
+# Với 5 danh mục, sáu brief chỉ cho 30 câu, không đủ cho mục tiêu 40. Mười hai
+# brief cho 60, đủ dư sau khi trừ những cặp mô hình diễn đạt trùng nhau.
 BRIEFS = [
     "một mẫu nhẹ, dễ điều khiển cho người mới",
     "một mẫu thiên công, đầu nặng để đập mạnh",
@@ -82,6 +86,12 @@ BRIEFS = [
     "một mẫu bền, dùng tập luyện hằng ngày",
     "một mẫu tầm trung, đáng tiền",
     "một mẫu cho người chơi phong trào cuối tuần",
+    "một mẫu êm chân, chơi nhiều giờ không mỏi",
+    "một mẫu thoáng mát, thấm hút mồ hôi tốt",
+    "một mẫu cho người đánh đôi, cần phản xạ nhanh",
+    "một mẫu cho người đánh đơn, cần sức bền",
+    "một mẫu giá rẻ cho học sinh sinh viên",
+    "một mẫu cao cấp cho người chơi lâu năm",
 ]
 
 
@@ -391,7 +401,7 @@ async def _sinh_bang_persona(
             break
         prompt = prompt_mau.format(
             category=sp.category,
-            brief=bien[(i // max(1, len(products))) % len(bien)],
+            brief=bien[i % len(bien)],
             specs=", ".join(f"{k} {v}" for k, v in list(sp.specs.items())[:3]),
         )
         raw = await llm.chat([{"role": "user", "content": prompt}], temperature=0.0)
