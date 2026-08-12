@@ -5,8 +5,11 @@ Ba generator theo luật và bộ chèn lỗi gõ không đụng tới DB hay LL
 được trên máy chủ, nên ở đây chỉ kiểm bộ đọc phán quyết của LLM.
 """
 
+from pathlib import Path
+
 from eval.catalog import Product, format_price_vn, parse_specs, price_thresholds
 from eval.generate import (
+    BRIEFS,
     _doc_phan_quyet,
     _lam_sach,
     doc_target,
@@ -16,7 +19,7 @@ from eval.generate import (
     gen_typo,
 )
 from eval.generate_golden import leaks_name
-from eval.golden import QUERY_TYPES, SOURCES
+from eval.golden import CATEGORY_VOCAB, QUERY_TYPES, SOURCES
 from eval.typo import bo_dau, inject
 
 VOT = "Vợt cầu lông"
@@ -254,3 +257,27 @@ def test_lam_sach_giu_nguyen_cau_binh_thuong():
 def test_lam_sach_loai_chuoi_qua_ngan():
     assert _lam_sach("Câu hỏi:") == ""
     assert _lam_sach("ok") == ""
+
+
+# ------------------------------------------- trần số câu khác nhau sinh được
+
+
+def test_du_brief_cho_muc_tieu_attribute():
+    """Prompt attribute chỉ phụ thuộc (danh mục, brief) - không phụ thuộc sản
+    phẩm, vì nêu đặc điểm riêng sẽ làm lộ danh tính. Ở nhiệt độ 0, cùng cặp thì
+    cùng câu, nên số câu khác nhau bị chặn ở tích hai con số đó.
+
+    Sáu brief chỉ cho 30 câu và mẻ chạy thật dừng ở 13. Test này giữ cho trần
+    luôn cao hơn mục tiêu."""
+    danh_muc = len(CATEGORY_VOCAB)
+    assert danh_muc * len(BRIEFS) >= 40, (
+        f"{danh_muc} danh mục x {len(BRIEFS)} brief = {danh_muc * len(BRIEFS)} câu "
+        "khác nhau tối đa, không đủ cho mục tiêu 40 của slice attribute"
+    )
+
+
+def test_brief_doi_theo_tung_san_pham():
+    """Chọn brief theo vòng thay vì theo sản phẩm là đúng lỗi làm attribute
+    tụt còn 13: suốt vòng đầu mọi sản phẩm dùng chung một brief."""
+    src = Path("eval/generate.py").read_text(encoding="utf-8")
+    assert "brief=bien[i % len(bien)]" in src
