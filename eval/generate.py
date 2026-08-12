@@ -44,6 +44,14 @@ from eval.typo import inject
 GENERATOR_VERSION = "v2"
 TOP_K_PRE_LABEL = 15
 
+
+def _log(*a) -> None:
+    """In kèm flush. `docker compose exec -T` không cấp TTY nên Python đệm
+    stdout theo khối: không flush thì suốt 25-60 phút chạy màn hình trắng trơn,
+    và người chạy không phân biệt được đang chạy với đã treo."""
+    print(*a, flush=True)
+
+
 BROWSE_TEMPLATES = [
     "shop có {cat} không?",
     "cho xem các mẫu {cat}",
@@ -336,6 +344,7 @@ async def _sinh_bang_persona(
     tra_cuu: dict[str, Product],
     seed: int,
     bien: list[str],
+    ghi=None,
 ) -> list[dict]:
     rng = random.Random(seed)
     chon = list(products)
@@ -374,6 +383,11 @@ async def _sinh_bang_persona(
                     review_context=ctx,
                 )
             )
+            if ghi:
+                # Ghi ngay từng dòng: mỗi câu tốn ba lượt gọi mô hình, mất cả
+                # mẻ vì một lỗi ở câu thứ 95 là quá đắt.
+                ghi(ra[-1])
+            _log(f"  {query_type} {len(ra)}/{target}: {line[:64]}")
             break  # mỗi sản phẩm góp một câu, tránh dồn slice vào vài sản phẩm
     return ra
 
@@ -414,11 +428,27 @@ def doc_target(s: str) -> dict[str, int]:
 
 
 async def run(out: str, target: dict[str, int], seed: int) -> list[dict]:
+    # Ba loại dùng LLM tốn ba lượt gọi mô hình mỗi câu: sinh câu hỏi, hiểu truy
+    # vấn (ProductionRetriever gọi qu.analyze), rồi chấm nhãn. Chúng chạy tuần
+    # tự nên tổng thời gian là tổng thời gian sinh của mô hình - báo trước để
+    # người chạy biết đây là chuyện của hàng chục phút, không phải hàng giây.
+    can_llm = sum(target.get(t, 0) for t in ("attribute", "known-item", "spec"))
+    _log(
+        f"sẽ gọi mô hình khoảng {can_llm * 3} lượt, tuần tự "
+        f"(~{can_llm * 3 * 8 // 60} phút nếu 8 giây/lượt)"
+    )
+
     pool = await create_pool()
+    fh = open(out, "w", encoding="utf-8")
+
+    def ghi(d: dict) -> None:
+        fh.write(json.dumps(d, ensure_ascii=False) + "\n")
+        fh.flush()
+
     async with httpx.AsyncClient() as client:
         try:
             products = await load_products(pool)
-            print(
+            _log(
                 f"catalog: {len(products)} sản phẩm, "
                 f"{len({p.category for p in products})} danh mục"
             )
@@ -426,7 +456,7 @@ async def run(out: str, target: dict[str, int], seed: int) -> list[dict]:
             if can_gia:
                 products = await attach_prices(products, ProductClient(client))
                 co = sum(1 for p in products if p.price)
-                print(f"giá lấy từ shop-api: {co}/{len(products)} sản phẩm")
+                _log(f"giá lấy từ shop-api: {co}/{len(products)} sản phẩm")
             tra_cuu = {p.source_id: p for p in products}
 
             llm = LLMService(client)
@@ -436,10 +466,24 @@ async def run(out: str, target: dict[str, int], seed: int) -> list[dict]:
             retriever = ProductionRetriever(embedder, retrieval, qu)
 
             rows: list[dict] = []
-            rows += gen_browse(products, target.get("browse", 0), seed)
-            rows += gen_multi_category(products, target.get("multi-category", 0), seed)
-            if can_gia:
-                rows += gen_price(products, target["price-constrained"], seed)
+            for ten, ds in (
+                ("browse", gen_browse(products, target.get("browse", 0), seed)),
+                (
+                    "multi-category",
+                    gen_multi_category(products, target.get("multi-category", 0), seed),
+                ),
+                (
+                    "price-constrained",
+                    gen_price(products, target["price-constrained"], seed)
+                    if can_gia
+                    else [],
+                ),
+            ):
+                rows += ds
+                for d in ds:
+                    ghi(d)
+                if ds:
+                    _log(f"{ten}: xong {len(ds)} (theo luật, không gọi mô hình)")
 
             co_spec = [p for p in products if p.specs]
             for qt, prompt, nguon in (
@@ -451,21 +495,33 @@ async def run(out: str, target: dict[str, int], seed: int) -> list[dict]:
                 if not n:
                     continue
                 if not nguon:
-                    print(f"BỎ QUA {qt}: không sản phẩm nào có thông số trong corpus")
+                    _log(f"BỎ QUA {qt}: không sản phẩm nào có thông số trong corpus")
                     continue
                 truoc = len(rows)
                 rows += await _sinh_bang_persona(
-                    nguon, prompt, qt, n, llm, llm, retriever, tra_cuu, seed, BRIEFS
+                    nguon,
+                    prompt,
+                    qt,
+                    n,
+                    llm,
+                    llm,
+                    retriever,
+                    tra_cuu,
+                    seed,
+                    BRIEFS,
+                    ghi,
                 )
-                print(f"{qt}: {len(rows) - truoc}/{n}")
+                _log(f"{qt}: xong {len(rows) - truoc}/{n}")
 
-            rows += gen_typo(rows, target.get("typo", 0), seed)
+            ds = gen_typo(rows, target.get("typo", 0), seed)
+            rows += ds
+            for d in ds:
+                ghi(d)
+            if ds:
+                _log(f"typo: xong {len(ds)} (kế thừa nhãn)")
         finally:
             await pool.close()
-
-    with open(out, "w", encoding="utf-8") as fh:
-        for d in rows:
-            fh.write(json.dumps(d, ensure_ascii=False) + "\n")
+            fh.close()
     return rows
 
 
@@ -480,11 +536,11 @@ def main() -> None:
     import collections
 
     dem = collections.Counter(d["query_type"] for d in rows)
-    print(f"\nĐã ghi {len(rows)} ứng viên -> {args.out}")
+    _log(f"\nĐã ghi {len(rows)} ứng viên -> {args.out}")
     for k in sorted(dem):
-        print(f"  {k:18s} {dem[k]}")
+        _log(f"  {k:18s} {dem[k]}")
     can_duyet = sum(1 for d in rows if "review_context" in d)
-    print(f"\n{can_duyet} dòng cần người duyệt (có review_context).")
+    _log(f"\n{can_duyet} dòng cần người duyệt (có review_context).")
 
 
 if __name__ == "__main__":
