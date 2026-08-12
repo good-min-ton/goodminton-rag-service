@@ -9,9 +9,28 @@ def strip_accents(s: str) -> str:
     return "".join(c for c in nfkd if not unicodedata.combining(c))
 
 
-def leaks_name(query: str, name: str, brand: str) -> bool:
+def leaks_name(query: str, name: str, brand: str, category: str = "") -> bool:
+    """Câu hỏi có làm lộ danh tính sản phẩm không.
+
+    `category` phải được truyền vào, nếu không bộ lọc sẽ chặn nhầm gần hết. Tên
+    sản phẩm tiếng Việt mở đầu bằng chính danh mục - "Vợt cầu lông Yonex Astrox
+    99 Tour" - nên nếu lấy nguyên tên làm token định danh thì "vot", "cau",
+    "long" cũng bị tính, và mọi câu hỏi nhắc tới "vợt cầu lông" đều bị loại.
+
+    Đó là chuyện đã xảy ra thật: mẻ sinh đầu cho ra spec 0/30 và known-item
+    2/30, còn 40 câu attribute sống sót thì lệch - chúng chỉ qua được vì tình cờ
+    không nhắc tên danh mục.
+
+    Thứ cần chặn là danh tính riêng: thương hiệu và mã sản phẩm. Nói "vợt cầu
+    lông" là mô tả nhu cầu, không phải nêu tên.
+    """
     q = strip_accents(query)
-    tokens = [t for t in strip_accents(f"{name} {brand}").split() if len(t) >= 3]
+    chung = {t for t in strip_accents(category).split() if len(t) >= 3}
+    tokens = [
+        t
+        for t in strip_accents(f"{name} {brand}").split()
+        if len(t) >= 3 and t not in chung
+    ]
     return any(t in q for t in tokens)
 
 
@@ -72,7 +91,9 @@ async def generate_candidates(
         prompt = _PERSONA_PROMPT.format(category=item["category"], brief=brief)
         raw = await llm.chat([{"role": "user", "content": prompt}], temperature=0.0)
         for line in [q.strip("-• ").strip() for q in raw.splitlines() if q.strip()]:
-            if not line or leaks_name(line, item["name"], item["brand"]):
+            if not line or leaks_name(
+                line, item["name"], item["brand"], item["category"]
+            ):
                 continue
             ranked = await retriever.retrieve(line, 10)
             candidates.append(

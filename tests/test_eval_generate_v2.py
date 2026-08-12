@@ -14,6 +14,7 @@ from eval.generate import (
     gen_price,
     gen_typo,
 )
+from eval.generate_golden import leaks_name
 from eval.golden import QUERY_TYPES, SOURCES
 from eval.typo import bo_dau, inject
 
@@ -200,3 +201,21 @@ def test_doc_target_doi_ten_price():
         "attribute": 40,
         "price-constrained": 25,
     }
+
+
+# ------------------------------------------------------ bộ lọc leak
+
+
+def test_leak_filter_khong_chan_tu_chi_danh_muc():
+    """Tên sản phẩm tiếng Việt chứa sẵn danh mục, nên nếu không trừ nó ra thì
+    mọi câu hỏi nhắc "vợt cầu lông" đều bị loại. Mẻ sinh đầu tiên hỏng đúng vì
+    lỗi này: spec 0/30, known-item 2/30."""
+    ten, brand, cat = "Vợt cầu lông Yonex Astrox 99 Tour", "Yonex", "Vợt cầu lông"
+    assert leaks_name("vợt cầu lông nào nhẹ cho người mới", ten, brand, cat) is False
+    assert leaks_name("cây vợt nào độ căng 24-28 lbs", ten, brand, cat) is False
+
+
+def test_leak_filter_van_chan_ten_va_thuong_hieu():
+    ten, brand, cat = "Vợt cầu lông Yonex Astrox 99 Tour", "Yonex", "Vợt cầu lông"
+    assert leaks_name("vợt Astrox 99 giá bao nhiêu", ten, brand, cat) is True
+    assert leaks_name("vợt Yonex nào tốt", ten, brand, cat) is True
