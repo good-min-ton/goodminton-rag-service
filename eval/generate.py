@@ -21,6 +21,7 @@ import argparse
 import asyncio
 import json
 import random
+import re
 
 import httpx
 
@@ -82,6 +83,36 @@ BRIEFS = [
     "một mẫu tầm trung, đáng tiền",
     "một mẫu cho người chơi phong trào cuối tuần",
 ]
+
+
+_CJK = re.compile(r"[\u4e00-\u9fff]")
+_MO_DAU_THUA = re.compile(
+    r"^(câu hỏi(\s+\w+)*\s*(có thể\s*)?(là|như sau)\s*:|"
+    r"có thể hỏi như sau\s*:|dưới đây là[^:]*:)\s*",
+    re.IGNORECASE,
+)
+
+
+def _lam_sach(raw: str) -> str:
+    """Chuẩn hoá một dòng do mô hình trả về, trả chuỗi rỗng nếu không dùng được.
+
+    Hai thứ qwen2.5 hay làm mà mẻ sinh đầu không lọc:
+
+    - **Trôi sang tiếng Trung.** 17/40 câu attribute lẫn chữ Hán, có câu là cả
+      một đoạn bình luận meta bằng tiếng Trung. Không cứu được bằng cắt chuỗi,
+      phải loại thẳng.
+    - **Thêm câu dẫn.** "Câu hỏi phù hợp với yêu cầu có thể là: <câu hỏi>" -
+      9/30 câu known-item bị vậy. Phần sau dấu hai chấm vẫn dùng được nên cắt
+      bỏ phần dẫn thay vì loại cả dòng, vì pool sản phẩm quá nhỏ để phung phí.
+    """
+    line = raw.strip("-•*0123456789. \t").strip()
+    if not line:
+        return ""
+    line = _MO_DAU_THUA.sub("", line).strip().strip('"').strip()
+    if _CJK.search(line):
+        return ""
+    # Còn quá ngắn sau khi cắt thì không phải câu hỏi.
+    return line if len(line) >= 15 else ""
 
 
 def _thuong(cat: str) -> str:
@@ -354,20 +385,28 @@ async def _sinh_bang_persona(
     vong = max(1, -(-target // max(1, len(chon))) + 1)
     chon = chon * vong
     ra: list[dict] = []
+    da_ra: set[str] = set()
     for i, sp in enumerate(chon):
         if len(ra) >= target:
             break
         prompt = prompt_mau.format(
             category=sp.category,
-            brief=bien[i % len(bien)],
+            brief=bien[(i // max(1, len(products))) % len(bien)],
             specs=", ".join(f"{k} {v}" for k, v in list(sp.specs.items())[:3]),
         )
         raw = await llm.chat([{"role": "user", "content": prompt}], temperature=0.0)
-        for line in [q.strip("-•0123456789. ").strip() for q in raw.splitlines()]:
+        for line in [_lam_sach(q) for q in raw.splitlines()]:
             if len(ra) >= target or not line:
                 continue
             if leaks_name(line, sp.name, sp.brand, sp.category):
                 continue
+            # Nhiệt độ 0 nên cùng prompt luôn ra cùng câu. Pool nhỏ hơn target
+            # buộc phải quay vòng sản phẩm, và nếu không chặn ở đây thì slice
+            # đầy lên bằng bản sao - mẻ đầu có 11/30 câu known-item trùng nhau,
+            # tức slice trông đủ 30 nhưng chỉ đo được 19 câu khác nhau.
+            if line in da_ra:
+                continue
+            da_ra.add(line)
             ids, ctx = await pre_label(line, sp.source_id, retriever, judge, tra_cuu)
             ra.append(
                 _dong(
@@ -396,21 +435,37 @@ async def _sinh_bang_persona(
     return ra
 
 
+# "Chỉ in đúng câu hỏi" và "bằng tiếng Việt" đều là bắt buộc, không phải cho
+# đẹp: mẻ đầu có 17/40 câu lẫn tiếng Trung và 9/30 câu bị thêm dòng dẫn.
+_YEU_CAU = (
+    " Viết bằng TIẾNG VIỆT. Chỉ in đúng một câu hỏi, không thêm lời dẫn, "
+    "không giải thích, không đánh số."
+)
 _ATTRIBUTE_PROMPT = (
     "Bạn là khách mua cầu lông. Viết MỘT câu hỏi tự nhiên để tìm sản phẩm thuộc "
     "danh mục '{category}' với đặc điểm: {brief}. TUYỆT ĐỐI KHÔNG nhắc tên hay "
-    "thương hiệu sản phẩm. Chỉ trả lời câu hỏi, không giải thích."
+    "thương hiệu sản phẩm." + _YEU_CAU
 )
 _KNOWN_ITEM_PROMPT = (
-    "Bạn là khách đã nghe mô tả về một cây {category} có các đặc điểm: {specs}. "
-    "Viết MỘT câu hỏi để tìm đúng sản phẩm đó, mô tả bằng đặc điểm kỹ thuật riêng "
-    "của nó. TUYỆT ĐỐI KHÔNG nhắc tên hay thương hiệu. Chỉ trả lời câu hỏi."
+    "Bạn là khách đã nghe mô tả về một sản phẩm thuộc '{category}' có các đặc "
+    "điểm: {specs}. Viết MỘT câu hỏi để tìm đúng sản phẩm đó, {brief}. TUYỆT ĐỐI "
+    "KHÔNG nhắc tên hay thương hiệu." + _YEU_CAU
 )
 _SPEC_PROMPT = (
     "Bạn là khách mua cầu lông quan tâm tới thông số. Viết MỘT câu hỏi tìm "
-    "'{category}' theo thông số: {specs}. Hỏi theo con số/thông số, KHÔNG nhắc "
-    "tên hay thương hiệu. Chỉ trả lời câu hỏi."
+    "'{category}' theo thông số: {specs}, {brief}. Hỏi theo con số hoặc thông "
+    "số, KHÔNG nhắc tên hay thương hiệu." + _YEU_CAU
 )
+
+# Góc hỏi để cùng một sản phẩm sinh ra câu khác nhau qua các vòng quay pool.
+# Chỉ 27/272 sản phẩm có khai thông số, nên pool của known-item và spec nhỏ hơn
+# target; không đổi góc hỏi thì quay vòng chỉ ra bản sao.
+GOC_HOI = [
+    "nhấn vào công nghệ hoặc vật liệu đặc trưng",
+    "nhấn vào con số cụ thể (trọng lượng, độ căng, đường kính)",
+    "hỏi như người đang so sánh vài lựa chọn",
+    "hỏi như người được người khác giới thiệu lại",
+]
 
 
 # ---------------------------------------------------------------- CLI
@@ -490,10 +545,10 @@ async def run(out: str, target: dict[str, int], seed: int) -> list[dict]:
                     _log(f"{ten}: xong {len(ds)} (theo luật, không gọi mô hình)")
 
             co_spec = [p for p in products if p.specs]
-            for qt, prompt, nguon in (
-                ("attribute", _ATTRIBUTE_PROMPT, products),
-                ("known-item", _KNOWN_ITEM_PROMPT, co_spec),
-                ("spec", _SPEC_PROMPT, co_spec),
+            for qt, prompt, nguon, bien in (
+                ("attribute", _ATTRIBUTE_PROMPT, products, BRIEFS),
+                ("known-item", _KNOWN_ITEM_PROMPT, co_spec, GOC_HOI),
+                ("spec", _SPEC_PROMPT, co_spec, GOC_HOI),
             ):
                 n = target.get(qt, 0)
                 if not n:
@@ -513,7 +568,7 @@ async def run(out: str, target: dict[str, int], seed: int) -> list[dict]:
                     retriever,
                     tra_cuu,
                     seed,
-                    BRIEFS,
+                    bien,
                     ghi,
                 )
                 _log(f"{qt}: xong {len(rows) - truoc}/{n}")

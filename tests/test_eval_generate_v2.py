@@ -8,6 +8,7 @@ Ba generator theo luật và bộ chèn lỗi gõ không đụng tới DB hay LL
 from eval.catalog import Product, format_price_vn, parse_specs, price_thresholds
 from eval.generate import (
     _doc_phan_quyet,
+    _lam_sach,
     doc_target,
     gen_browse,
     gen_multi_category,
@@ -219,3 +220,37 @@ def test_leak_filter_van_chan_ten_va_thuong_hieu():
     ten, brand, cat = "Vợt cầu lông Yonex Astrox 99 Tour", "Yonex", "Vợt cầu lông"
     assert leaks_name("vợt Astrox 99 giá bao nhiêu", ten, brand, cat) is True
     assert leaks_name("vợt Yonex nào tốt", ten, brand, cat) is True
+
+
+# ------------------------------------------------------ làm sạch đầu ra LLM
+
+
+def test_lam_sach_loai_cau_lan_tieng_trung():
+    """17/40 câu attribute ở mẻ đầu lẫn chữ Hán; qwen2.5 trôi ngôn ngữ."""
+    assert _lam_sach("Có款式不符合要求，客户询问的内容应该与羽毛球鞋相关") == ""
+    assert _lam_sach("Công nghệ Multi-Flex có độ dày đế giày是多少毫米") == ""
+
+
+def test_lam_sach_cat_loi_dan():
+    """9/30 câu known-item bị thêm câu dẫn; phần sau dấu hai chấm vẫn dùng được."""
+    assert (
+        _lam_sach(
+            "Câu hỏi phù hợp với yêu cầu có thể là: Sản phẩm nào dùng công nghệ X"
+        )
+        == "Sản phẩm nào dùng công nghệ X"
+    )
+    assert (
+        _lam_sach('Có thể hỏi như sau: "Tôi cần cây vợt trục 6.6mm"')
+        == "Tôi cần cây vợt trục 6.6mm"
+    )
+
+
+def test_lam_sach_giu_nguyen_cau_binh_thuong():
+    q = "Vợt cầu lông nào nhẹ và dễ điều khiển cho người mới chơi?"
+    assert _lam_sach(f"- {q}") == q
+    assert _lam_sach(f"1. {q}") == q
+
+
+def test_lam_sach_loai_chuoi_qua_ngan():
+    assert _lam_sach("Câu hỏi:") == ""
+    assert _lam_sach("ok") == ""
