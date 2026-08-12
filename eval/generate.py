@@ -349,6 +349,10 @@ async def _sinh_bang_persona(
     rng = random.Random(seed)
     chon = list(products)
     rng.shuffle(chon)
+    # Quay vòng khi pool nhỏ hơn target: mỗi vòng đổi brief nên câu hỏi khác
+    # nhau. Không quay vòng thì slice im lặng dừng ở đúng size của pool.
+    vong = max(1, -(-target // max(1, len(chon))) + 1)
+    chon = chon * vong
     ra: list[dict] = []
     for i, sp in enumerate(chon):
         if len(ra) >= target:
@@ -362,7 +366,7 @@ async def _sinh_bang_persona(
         for line in [q.strip("-•0123456789. ").strip() for q in raw.splitlines()]:
             if len(ra) >= target or not line:
                 continue
-            if leaks_name(line, sp.name, sp.brand):
+            if leaks_name(line, sp.name, sp.brand, sp.category):
                 continue
             ids, ctx = await pre_label(line, sp.source_id, retriever, judge, tra_cuu)
             ra.append(
@@ -497,6 +501,7 @@ async def run(out: str, target: dict[str, int], seed: int) -> list[dict]:
                 if not nguon:
                     _log(f"BỎ QUA {qt}: không sản phẩm nào có thông số trong corpus")
                     continue
+                _log(f"{qt}: pool {len(nguon)} sản phẩm, cần {n} câu")
                 truoc = len(rows)
                 rows += await _sinh_bang_persona(
                     nguon,
