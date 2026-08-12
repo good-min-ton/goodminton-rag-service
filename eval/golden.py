@@ -18,8 +18,16 @@ QUERY_TYPES: set[str] = {
     "typo",
     "multi-category",
     "known-item",
+    # v2: nâng từ một cờ thành loại truy vấn thật, để slice này có n riêng và
+    # khoảng tin cậy riêng. Cờ price_constrained vẫn giữ nguyên nên runner tiếp
+    # tục tách được bucket cũ.
+    "price-constrained",
 }
-SOURCES: set[str] = {"hand", "semi-auto"}
+# "auto" = nhãn suy ra bằng luật từ catalog (danh mục, hoặc danh mục kèm trần
+# giá) và không qua tay người. Tách khỏi "semi-auto" vì hai mức tin cậy khác
+# nhau: "semi-auto" là LLM chấm rồi người duyệt, còn "auto" thì đúng theo định
+# nghĩa của câu hỏi nên không có gì để duyệt.
+SOURCES: set[str] = {"hand", "semi-auto", "auto"}
 
 
 @dataclass
