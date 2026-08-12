@@ -31,3 +31,18 @@ class EmbedClient:
         if r.status_code != 200:
             raise EmbedUnavailable(f"embed-service returned {r.status_code}")
         return r.json()["embedding"]
+
+    async def embed_text(self, text: str) -> list[float]:
+        """POST a text description; return the 768-dim SigLIP text vector (same
+        joint space as image embeddings). Mirrors embed_image's error contract."""
+        try:
+            r = await self._client.post(
+                f"{settings.embed_service_url}/embed/text",
+                json={"text": text},
+                timeout=30.0,
+            )
+        except httpx.HTTPError as exc:  # connect/timeout/etc -> unavailable (H7)
+            raise EmbedUnavailable(str(exc)) from exc
+        if r.status_code != 200:
+            raise EmbedUnavailable(f"embed-service returned {r.status_code}")
+        return r.json()["embedding"]

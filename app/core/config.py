@@ -105,6 +105,11 @@ class Settings(BaseSettings):
     image_search_max_distance: float = 0.30
     image_max_upload_bytes: int = 8 * 1024 * 1024  # 8 MB outer cap
 
+    # Text->image cross-modal distance follows a different distribution than
+    # image->image (which image_search_max_distance=0.30 was calibrated on).
+    # 0 = filter disabled until calibrated on live text->image data (F1 eval).
+    text_search_max_distance: float = 0.0
+
     @property
     def cors_middleware_kwargs(self) -> dict:
         """Origin arguments for Starlette's CORSMiddleware.

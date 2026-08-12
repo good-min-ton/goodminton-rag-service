@@ -10,13 +10,18 @@ class ImageSearchService:
         self._pool = pool
 
     async def search(
-        self, query_embedding: list[float], top_k: int | None = None
+        self,
+        query_embedding: list[float],
+        top_k: int | None = None,
+        max_distance: float | None = None,
     ) -> list[str]:
         k = top_k or settings.image_search_top_k
         over_fetch = k * settings.image_search_over_fetch_factor  # H8
         params: list = [query_embedding]
         having = ""
-        max_dist = settings.image_search_max_distance
+        max_dist = (
+            settings.image_search_max_distance if max_distance is None else max_distance
+        )
         if max_dist and max_dist > 0:
             params.append(max_dist)
             having = f"HAVING MIN(embedding <=> $1) <= ${len(params)} "
